@@ -1,0 +1,74 @@
+[
+  {
+    "file": "fov/preprocessing.py",
+    "original_sha256": "f3468cefd5cf5e50261795df097f316080edeca89d13f0366ced670a89e06b41",
+    "copied_verbatim": true
+  },
+  {
+    "file": "fov/camera.py",
+    "original_sha256": "2b95b371949ccc32eee9120d4bc3aea7804f05ec50fef07e2eadd7170d184792",
+    "copied_verbatim": true
+  },
+  {
+    "file": "fov/frame_archive_v2.py",
+    "original_sha256": "cc046b56af82fb61c16f3fa482c44fbe27550c0f8d382ab17a6d4d19e4b0e623",
+    "copied_verbatim": true
+  },
+  {
+    "file": "fov/expert_trajectory_loss.py",
+    "original_sha256": "5ce7fa767c0039b16fcd9cf33b80337869f4d4e8d33e4ef9f7705ded1ace0f38",
+    "copied_verbatim": true
+  },
+  {
+    "file": "fov/onnx_trainable.py",
+    "original_sha256": "024cb75d4dc69063acaa9739544b406e5bc52fa8c7bb0a3c8e43e14631f02cad",
+    "copied_verbatim": true
+  },
+  {
+    "file": "inspect_peripheral_cue.py",
+    "original_source_sha256": "e28779d2c50a55ce3e882acf8f114a91ff6a7ac68d9a22d4911dee0209b3f03a",
+    "extracted_function_verbatim": true,
+    "functions": [
+      "rgb_to_nv12_bt601_limited",
+      "unpack_six_plane_yuv420",
+      "packed_to_rgb_bt601_limited"
+    ]
+  },
+  {
+    "file": "runtime/drive_helpers.py",
+    "source": "iqpilot/selfdrive/controls/lib/drive_helpers.py",
+    "original_sha256": "94e202959eb80d841720ecd0581206fc4ac9d50ad2e2a6cf19f0de9914913988",
+    "definitions": [
+      "smooth_value"
+    ],
+    "extracted_verbatim": true
+  },
+  {
+    "file": "runtime/driving_action.py",
+    "source": "iqpilot/selfdrive/iqmodeld/driving_action.py",
+    "original_sha256": "46a46ea0675ce2f815021c63f3b1ab171c7a453c499a827f2a82b2f2e55d6f58",
+    "definitions": [
+      "get_action_from_model"
+    ],
+    "extracted_verbatim": true
+  },
+  {
+    "file": "runtime/latcontrol_angle.py",
+    "source": "iqpilot/selfdrive/controls/lib/latcontrol_angle.py",
+    "original_sha256": "39de443a486f53fa49a006fdb8502f68130f54f39120412d1c277ec9363125bc",
+    "definitions": [
+      "LatControlAngle"
+    ],
+    "extracted_verbatim": true
+  },
+  {
+    "file": "runtime/vehicle_model.py",
+    "source": "artifacts/package_runtime/iqdbc/car/vehicle_model.py",
+    "original_sha256": "9059a8978faf532815472d79bfff4c5bb7a67912bdbc8babb5b409a926a5d46c",
+    "definitions": [
+      "VehicleModel",
+      "calc_slip_factor"
+    ],
+    "extracted_verbatim": true
+  }
+]

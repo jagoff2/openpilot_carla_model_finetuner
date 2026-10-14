@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "carla-lane-centering-dataset"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = ["numpy==2.2.6", "scipy==1.15.3", "pillow", "psutil", "imageio-ffmpeg>=0.6"]
+
+[project.optional-dependencies]
+test = ["pytest"]
+training = ["torch>=2.6,<3", "onnx>=1.16", "onnxruntime>=1.20,<2"]
+
+[project.scripts]
+lane-dataset = "lane_dataset.cli:main"
+lane-centerline-smoke = "lane_training.smoke:main"
+lane-centerline-audit = "lane_training.audit:main"
+lane-cd210-fetch = "lane_training.fetch_cd210:main"
+lane-cd210-train = "lane_training.production:main"
+lane-cd210-export = "lane_release.export:main"
+lane-pipeline-prepare = "pipeline.bootstrap:main"
+lane-collect = "reports.automatic_corpus:main"
+
+[tool.setuptools.packages.find]
+include = ["lane_dataset*", "lane_training*", "lane_release*", "lane_reference*", "reports", "pipeline*"]
+
+[tool.setuptools.package-data]
+pipeline = ["assets/*.json"]
+lane_reference = ["PROVENANCE.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--basetemp=reports/test-temp"

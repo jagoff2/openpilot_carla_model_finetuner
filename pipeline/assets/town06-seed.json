@@ -1,0 +1,51 @@
+{
+  "annotation_blockers": [],
+  "annotation_status": "proposal_requires_rendered_review",
+  "appearance": 0,
+  "branch": 0,
+  "direction": "left",
+  "episode_id": "town06-flat-road40-extended-approach",
+  "family": "tightening_s_bend",
+  "group_id": "qualification-town06-road40",
+  "maneuver_phase_ranges": {
+    "apex": [
+      102.48682182790911,
+      134.56508627935114
+    ],
+    "approach": [
+      56.00793854935227,
+      66.00793854935228
+    ],
+    "entry": [
+      66.00793854935228,
+      102.48682182790911
+    ],
+    "exit": [
+      134.56508627935114,
+      149.72891326262845
+    ],
+    "recovery": [
+      149.72891326262845,
+      159.72891326262845
+    ]
+  },
+  "maximum_control_rejection_frames": 20,
+  "minimum_ticks": 1100,
+  "nominal_speed_mps": 3.5,
+  "phase_basis": "Original native curvature proposal translated to extended approach; 10 m recovery; rendered review pending",
+  "physical_map_initialization": true,
+  "planned_preview_m": 25.0,
+  "procedural": false,
+  "rendered_qualification": false,
+  "seed": 305951368,
+  "split": "development",
+  "start": {
+    "lane_id": -4,
+    "road_id": 40,
+    "s": 405.0
+  },
+  "survey_road_surface": false,
+  "town": "Town06",
+  "warmup_distance_budget_m": 45.0,
+  "route_length_m": 280.0
+}
