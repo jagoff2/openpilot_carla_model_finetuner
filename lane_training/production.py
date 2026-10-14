@@ -16,7 +16,6 @@ import traceback
 
 import psutil
 from lane_dataset.config import DEFAULT_ROOT
-
 import torch
 
 from lane_dataset.loader import SequenceEpisode
@@ -25,6 +24,10 @@ from .cd210 import ROLLOUT_PLAN, backward, student_rollout
 from .cd210_model import create_model, export_onnx, load_checkpoint, save_checkpoint
 from .smoke import parameter_digest
 from .targets import episode_corridors
+from .checkpoint_store import (checkpoint_path, immutable_json, preserve,
+    protect_validation, protected_cohorts)
+from lane_dataset.config import write_json
+from uuid import uuid4
 
 
 def digest(path):
@@ -32,12 +35,7 @@ def digest(path):
 
 
 def atomic_json(path, value):
-    path = Path(path)
-    temporary = path.with_suffix(path.suffix+'.partial')
-    with temporary.open('w', encoding='utf-8') as stream:
-        json.dump(value, stream, indent=2, allow_nan=False)
-        stream.write('\n'); stream.flush(); os.fsync(stream.fileno())
-    temporary.replace(path)
+    write_json(path, value)
 
 
 @contextmanager
@@ -164,6 +162,36 @@ def restore(directory,cfg):
     return model,optimizer,state
 
 
+def migrate_preservation(directory, cfg):
+    """Explicit persistence-only migration; archive both slots before rebinding code."""
+    directory = Path(directory)
+    model, optimizer, state = restore(directory, cfg)
+    current = {p.name:digest(p) for p in Path(__file__).parent.glob('*.py')}
+    previous = state['source_hashes']
+    changed = {name for name in previous.keys() | current.keys() if previous.get(name) != current.get(name)}
+    if not changed:
+        return None
+    if not changed <= {'production.py', 'cd210_model.py', 'checkpoint_store.py'}:
+        raise ValueError(f'preservation migration refuses unrelated training changes: {sorted(changed)}')
+    saved = []
+    for source in sorted(directory.glob('checkpoint-[01].pt')):
+        package = torch.load(source,map_location='cpu',weights_only=True)
+        saved.append(preserve(directory,dict(file=source.name,sha256=digest(source),step=package['step']),
+            kind='pre_preservation_migration'))
+    best = directory/'best.json'
+    if best.exists():
+        record = json.loads(best.read_text())
+        preserve(directory,record,validation=record,kind='previous_best')
+    parameter_sha = parameter_digest(model)
+    audit = dict(step=state['step'],previous_sources=previous,current_sources=current,
+        preserved=saved,parameter_sha256=parameter_sha,optimizer_unchanged=True)
+    immutable_json(directory/'preserved/migrations'/(uuid4().hex+'.json'),audit)
+    state['source_hashes'] = current
+    state['last_validation'] = None
+    commit(directory,model,optimizer,state)
+    return audit
+
+
 @torch.no_grad()
 def evaluate_episode(episode,student,reference,progress=None):
     corridors = episode_corridors(episode)
@@ -275,9 +303,7 @@ class Trainer:
         self.active = None
         return metrics
 
-    def validate(self,rows):
-        selected = [r for r in rows if r['split']=='validation']
-        if not selected: return
+    def score(self, model, selected):
         cohort = hashlib.sha256(''.join(sorted(r['sha256'] for r in selected)).encode()).hexdigest()
         results = []
         for row in selected:
@@ -285,24 +311,42 @@ class Trainer:
             with SequenceEpisode(row['path']) as episode:
                 if episode.manifest['split']!='validation' or digest(episode.path)!=row['sha256']:
                     raise ValueError('validation manifest identity mismatch')
-                result = evaluate_episode(episode,self.model,self.reference,self.progress)
+                result = evaluate_episode(episode,model,self.reference,self.progress)
             results.append(dict(episode=row['id'],manifest_sha256=row['sha256'],**result))
         labels = sum(r['labels'] for r in results)
         result = dict(step=self.state['step'],cohort=cohort,episodes=len(results),labels=labels,
             loss=sum(r['loss']*r['labels'] for r in results)/labels,
             baseline_loss=sum(r['baseline_loss']*r['labels'] for r in results)/labels,
             test_split_used=False,rows=results)
-        atomic_json(self.directory/f'validation-step-{self.state["step"]:06d}.json',result)
+        return result
+
+    def validate(self,rows):
+        selected = [r for r in rows if r['split']=='validation']
+        if not selected: return
+        result = self.score(self.model, selected)
+        best_path = self.directory/'best.json'
+        incumbent = None
+        if best_path.exists():
+            best = json.loads(best_path.read_text())
+            preserve(self.directory, best, validation=best, kind='previous_best')
+            if best['cohort'] == result['cohort'] and best.get('rows'):
+                incumbent = best
+            else:
+                model, _ = load_checkpoint(checkpoint_path(self.directory, best))
+                incumbent = self.score(model, selected)
+                incumbent['sha256'] = best['sha256']
+                prior = best
+                if not best.get('rows'):
+                    prior = json.loads((self.directory/f'validation-step-{best["step"]:06d}.json').read_text())
+                    if prior['cohort'] != best['cohort']:
+                        raise ValueError('legacy best validation cohort changed')
+                incumbent['protected_cohorts'] = best.get('protected_cohorts') or protected_cohorts(prior)
+                del model
+        immutable_json(self.directory/'validation'/f'step-{self.state["step"]:06d}-{uuid4().hex}.json',result)
         self.state['last_validation'] = {k:v for k,v in result.items() if k!='rows'}
         pointer = commit(self.directory,self.model,self.optimizer,self.state)
-        best_path = self.directory/'best.json'
-        best = json.loads(best_path.read_text()) if best_path.exists() else None
-        if result['loss'] < result['baseline_loss'] and (best is None or best['cohort']!=cohort or result['loss']<best['loss']):
-            temporary = self.directory/'best.pt.partial'
-            shutil.copyfile(self.directory/pointer['file'],temporary)
-            temporary.replace(self.directory/'best.pt')
-            atomic_json(best_path,dict(**self.state['last_validation'],checkpoint='best.pt',sha256=digest(self.directory/'best.pt')))
-        self.log('validation_completed',**self.state['last_validation'])
+        promoted = protect_validation(self.directory, pointer, result, incumbent)
+        self.log('validation_completed',**self.state['last_validation'],best_promoted=promoted)
         self.active = None
 
     def run(self,*,max_steps=None):
@@ -326,8 +370,10 @@ class Trainer:
             if row is None:
                 if complete and not self.state['failed']:
                     self.status('exporting_final_candidate')
-                    binding = export_onnx(self.model,self.directory/'final-onnx')
-                    atomic_json(self.directory/'completion.json',dict(step=self.state['step'],exports=binding,
+                    from lane_release.export import prepare
+                    releases = self.directory/'final-exports'
+                    output = prepare(self.directory, releases)
+                    atomic_json(self.directory/'completion.json',dict(step=self.state['step'],exports=str(output),
                         final_validation=self.state['last_validation'],driving_release_qualified=False))
                     self.status('training_complete');return
                 self.active = None; self.status('waiting_for_new_accepted_training_data')
@@ -350,6 +396,8 @@ def main():
     parser.add_argument('--cpu-threads',type=int,default=2)
     parser.add_argument('--passes',type=int,default=4)
     parser.add_argument('--max-steps',type=int)
+    parser.add_argument('--migrate-preservation',action='store_true',
+        help='archive current checkpoints and migrate only persistence/export source bindings')
     args = parser.parse_args()
     cfg = TrainingConfig(corpus=str(args.corpus.resolve()),cpu_threads=args.cpu_threads,passes=args.passes)
     torch.set_num_threads(cfg.cpu_threads); torch.set_num_interop_threads(1)
@@ -357,6 +405,8 @@ def main():
     with run_lock(args.run_dir):
         trainer = None
         try:
+            if args.migrate_preservation:
+                migrate_preservation(args.run_dir,cfg)
             trainer = Trainer(cfg,args.run_dir)
             trainer.run(max_steps=args.max_steps)
         except BaseException as error:

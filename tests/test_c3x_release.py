@@ -64,7 +64,7 @@ def test_selection_uses_score_not_latest_and_can_retain_original():
     latest=dict(step=8,loss=2.6);earlier=dict(step=7,loss=2.4);original=dict(step=0,loss=2.5)
     assert export.choose([latest,earlier,original]) is earlier
     assert export.choose([latest,original]) is original
-    assert export.choose([dict(step=1,loss=2.5),original])['step']==1
+    assert export.choose([dict(step=1,loss=2.5),original])['step']==0
     with pytest.raises(ValueError,match='finite'):export.choose([dict(step=9,loss=float('nan'))])
 
 

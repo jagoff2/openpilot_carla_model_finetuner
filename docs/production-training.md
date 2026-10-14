@@ -64,11 +64,30 @@ updates. The test split is never evaluated by this trainer.
 - `events.jsonl`: committed updates, parameter hashes, gradient counts, episode
   losses and validation results.
 - `checkpoint-0.pt` / `checkpoint-1.pt`: resumable model and optimizer slots.
-- `validation-step-*.json`: validation results for that accepted validation set.
-- `best.pt` / `best.json`: a candidate that improves on original CD210's validation
-  centerline loss. Scores from different validation cohorts are not ranked together.
-- `final-onnx`: the final training-state exports once collection publishes a
-  complete corpus and all training episodes reach four passes without failures.
+- `validation/step-*.json`: immutable validation reports for each evaluation.
+- `preserved/checkpoints/<SHA-256>.pt`: permanent independent copies of every
+  better-than-stock validated candidate and every former best. There is no
+  automatic pruning. Rotating resume slots never share these checkpoint files.
+- `preserved/records` and `preserved/promotions`: append-only provenance records.
+- `best.json`: hash-bound pointer to a preserved winner. A replacement must
+  strictly beat stock and the incumbent on the same current validation cohort,
+  with no aggregate regression on any earlier promotion cohort. Ties retain the
+  incumbent. Adding validation data requires rescoring the incumbent first.
+- `final-exports`: immutable, verified ONNX exports selected through the same best
+  candidate logic used by the on-demand exporter. Completion never blindly
+  exports the latest training weights. `completion.json` identifies the export.
+
+Existing runs from before this preservation change can be migrated explicitly:
+
+```powershell
+python -m lane_training.production --run-dir runs/cd210-centerline-production --migrate-preservation
+```
+
+Stop the prior trainer cleanly first with its `stop.request` file, then remove
+that request before restarting. Migration archives both resume slots and any
+legacy `best.pt` before updating the source binding. It preserves weights,
+optimizer, step and sampling counts and requests fresh validation. It refuses
+changes outside the persistence/export modules. Legacy best files remain intact.
 
 Finite gradients and improving validation loss do not establish driving release
 qualification. A training completion report explicitly records that distinction.

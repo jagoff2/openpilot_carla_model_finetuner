@@ -81,6 +81,12 @@ def load_checkpoint(path, *, bundle_path=DEFAULT_CHECKPOINT, device='cpu', preci
 def export_onnx(model, directory):
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
+    # A durable exclusive claim also prevents two exports racing in one folder.
+    names = ['export.json', *(entry['file'] for entry in EXPORTS.values())]
+    if any((directory/name).exists() for name in names):
+        raise FileExistsError('model export already exists; choose a new directory')
+    with (directory/'.model-export-claimed').open('x', encoding='utf-8') as stream:
+        stream.write('This export directory must never be reused.\n')
     bindings = {role: dict(path=str(directory/entry['file']),
         sha256=getattr(model,role).export(directory/entry['file'])) for role,entry in EXPORTS.items()}
     (directory/'export.json').write_text(json.dumps(dict(model='CD210', upstream_commit=COMMIT,

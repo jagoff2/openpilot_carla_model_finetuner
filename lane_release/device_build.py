@@ -52,7 +52,7 @@ def compile_role(path,first_inputs,output_path):
         eager=run(**values).numpy()
         for _ in range(3): actual=jit(**values).numpy()
     np.testing.assert_allclose(actual,eager,atol=1e-4,rtol=1e-4)
-    with Path(output_path).open('wb') as stream: pickle.dump(jit,stream)
+    with Path(output_path).open('xb') as stream: pickle.dump(jit,stream)
     with Path(output_path).open('rb') as stream: restored=pickle.load(stream)
     np.testing.assert_array_equal(restored(**values).numpy(),actual)
     captured={name:dict(dtype=str(info[2]),device=info[3])
@@ -105,7 +105,7 @@ def main():
     import tinygrad
     from tinygrad import Device
     if Device.DEFAULT!='QCOM': raise RuntimeError('refusing a non-QCOM production artifact')
-    output=package/'compiled';output.mkdir(exist_ok=True)
+    output=package/'compiled';output.mkdir(exist_ok=False)
     reference=np.load(package/'verification.npz',allow_pickle=False)
     runtimes={};contracts={};files={}
     for role in ('vision','policy'):

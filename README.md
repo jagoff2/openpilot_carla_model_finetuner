@@ -207,3 +207,20 @@ See the [objective](docs/direct-centerline-objective.md),
 and [observability/split rules](docs/observability-and-splits.md).
 The existing [MIT license](LICENSE) covers original project code. Bundled runtime
 excerpts preserve their own terms in [third-party notices](THIRD_PARTY_NOTICES.md).
+
+## Preserving the best model during unattended runs
+
+Every better-than-stock validated candidate and every prior winner is saved in
+`runs/cd210-centerline-production/preserved/checkpoints/<SHA-256>.pt`. These files
+are never replaced or automatically pruned. The rotating resume slots are separate.
+`best.json` changes only for a strict comparable validation improvement over stock
+and the incumbent, with no regression on earlier promotion cohorts. Changed
+validation cohorts trigger an incumbent comparison; ties keep the existing best.
+
+Full-model ONNX and compiled PKL exports use separate immutable directories.
+Retries cannot overwrite a successful package. `releases/cd210/best-export.json`
+selects the best ONNX candidate; `best-runtime.json` retains the last successfully
+compiled best package while a new candidate awaits device compilation. Final
+training completion also exports the best selection, never simply the last step.
+See [checkpoint retention](docs/production-training.md) and
+[export selection](docs/c3x-export.md) for paths and migration instructions.

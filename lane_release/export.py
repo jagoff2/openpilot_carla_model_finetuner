@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import time
 import zipfile
+from uuid import uuid4
 
 import numpy as np
 import onnx
@@ -25,6 +26,8 @@ from lane_training.cd210 import DEFAULT_CHECKPOINT
 from lane_training.cd210_model import create_model,load_checkpoint,save_checkpoint,export_onnx
 from lane_training.onnx_model import ReleasedModel
 from lane_training.production import atomic_json,discover,evaluate_episode,run_lock
+from lane_training.checkpoint_store import (checkpoint_path, immutable_copy,
+    immutable_json, can_promote, protected_cohorts)
 from lane_training.verify_cd210 import float32_graph,runtime
 
 PROJECT=Path(__file__).resolve().parents[1]
@@ -53,9 +56,7 @@ def snapshot_pointer(run,pointer_path,destination):
             before=pointer_path.read_bytes();pointer=json.loads(before)
             filename=pointer.get('file',pointer.get('checkpoint'))
             if not isinstance(filename,str):raise ValueError('checkpoint pointer has no filename')
-            source=(run/filename).resolve()
-            if source.parent!=run or source.name not in ('checkpoint-0.pt','checkpoint-1.pt','best.pt'):
-                raise ValueError('unexpected checkpoint filename')
+            source=checkpoint_path(run,pointer)
             temporary=destination.with_suffix('.pt.partial')
             shutil.copyfile(source,temporary)
             actual=sha(temporary)
@@ -86,7 +87,21 @@ def snapshot_previous(run,latest,output):
 def choose(scored):
     if not scored or any(not np.isfinite(r['loss']) for r in scored):
         raise ValueError('best selection requires finite held-out validation scores')
-    return min(scored,key=lambda r:(r['loss'],-r['step']))
+    return min(scored,key=lambda r:(r['loss'],not r.get('incumbent_export',False),
+        r.get('kind')!='original_cd210',r['step']))
+
+
+def select_best(scored):
+    selected=choose(scored)
+    incumbent=next((c for c in scored if c.get('incumbent_export')),None)
+    promote_export=incumbent is None
+    if incumbent is not None and selected is not incumbent:
+        promote_export=can_promote(selected,incumbent)
+        if not promote_export:selected=incumbent
+    selected=dict(selected)
+    selected['promote_export']=promote_export
+    selected['protected_cohorts']=protected_cohorts(selected,incumbent)
+    return selected
 
 
 def select_checkpoint(run,output,releases):
@@ -97,14 +112,26 @@ def select_checkpoint(run,output,releases):
             snapshot=snapshot_pointer(run,pointer,output/f'snapshot-{name[:-5]}.pt')
             snapshot['kind']='fine_tuned';candidates.append(snapshot)
             if name=='resume.json':candidates.extend(snapshot_previous(run,snapshot,output))
+    for path in sorted((run/'preserved/records').glob('*.json')):
+        record=json.loads(path.read_text())
+        if record.get('kind') not in ('validated_candidate','previous_best'):continue
+        if any(c['source_checkpoint_sha256']==record['sha256'] for c in candidates):continue
+        dest=output/f'snapshot-preserved-{record["sha256"]}.pt'
+        immutable_copy(checkpoint_path(run,record),dest,record['sha256'])
+        candidates.append(dict(snapshot=str(dest),source_checkpoint_sha256=record['sha256'],
+            step=record['step'],kind='fine_tuned'))
     history=releases/'best-export.json'
     if history.exists():
         record=json.loads(history.read_text());path=(releases/record['checkpoint']).resolve()
         if releases.resolve() not in path.parents or sha(path)!=record['checkpoint_sha256']:
             raise ValueError('previous export checkpoint integrity failed')
         dest=output/'snapshot-export-best.pt';shutil.copyfile(path,dest)
+        prior=record
+        if not record.get('protected_cohorts'):
+            prior=json.loads((path.parent/'selection.json').read_text())['selected']
         candidates.append(dict(snapshot=str(dest),source_checkpoint_sha256=record['source_checkpoint_sha256'],
-            step=record['step'],kind=record.get('kind','fine_tuned')))
+            step=record['step'],kind=record.get('kind','fine_tuned'),incumbent_export=True,
+            protected_cohorts=record.get('protected_cohorts') or protected_cohorts(prior)))
     unique={c['source_checkpoint_sha256']:c for c in candidates};candidates=list(unique.values())
     if not candidates: raise ValueError('no committed training checkpoint is available')
     package=torch.load(candidates[0]['snapshot'],map_location='cpu',weights_only=True)
@@ -142,7 +169,7 @@ def select_checkpoint(run,output,releases):
         cohort=cohort,labels=scored[0]['labels'],loss=baseline,baseline_loss=baseline,
         validation=[dict(manifest=r['manifest'],manifest_sha256=r['manifest_sha256'],labels=r['labels'],
             loss=r['baseline_loss']) for r in scored[0]['validation']]))
-    selected=choose(scored)
+    selected=select_best(scored)
     selected['improves_original']=selected['loss']<selected['baseline_loss']
     selected['test_split_used']=False
     event('selected',kind=selected['kind'],step=selected['step'],validation_loss=selected['loss'],baseline_loss=selected['baseline_loss'])
@@ -150,6 +177,7 @@ def select_checkpoint(run,output,releases):
     package['optimizer']=None
     checkpoint=output/'checkpoint.pt';torch.save(package,checkpoint)
     for candidate in scored:candidate.pop('snapshot',None)
+    selected.pop('snapshot',None)
     selected['export_checkpoint']='checkpoint.pt';selected['export_checkpoint_sha256']=sha(checkpoint)
     atomic_json(output/'selection.json',dict(selected=selected,candidates=scored))
     for path in output.glob('snapshot-*.pt'): path.unlink()
@@ -239,12 +267,28 @@ def bundle_template(roles,selection):
 
 
 def prepare(run,releases):
+    releases=Path(releases).resolve()
+    with run_lock(releases):
+        return _prepare(Path(run).resolve(),releases)
+
+
+def _prepare(run,releases):
     torch.set_num_threads(2)
-    stamp=datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
+    stamp=datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')+'-'+uuid4().hex[:8]
     output=releases/stamp;output.mkdir(parents=True)
     atomic_json(output/'status.json',dict(stage='selecting_checkpoint',runtime_ready=False,driving_qualified=False))
     try:
         model,selection,validation=select_checkpoint(run,output,releases)
+        if not selection['promote_export']:
+            record=json.loads((releases/'best-export.json').read_text())
+            retained=(releases/record['checkpoint']).resolve().parent
+            from .device_build import check_files
+            check_files(retained,json.loads((retained/'payload.json').read_text()))
+            atomic_json(output/'status.json',dict(stage='retained_previous_best',directory=str(retained),
+                reason='no comparable strict improvement',runtime_ready=False,driving_qualified=False))
+            atomic_json(releases/'last-request.json',dict(directory=str(retained),comparison=str(output)))
+            event('retained_previous_best',directory=str(retained),step=selection['step'])
+            return retained
         roles=export_models(model,selection,output)
         verification=verification_trace(output,roles,validation)
     except Exception as error:
@@ -257,12 +301,22 @@ def prepare(run,releases):
         selected_checkpoint_sha256=selection['source_checkpoint_sha256'],step=selection['step'],
         files={name:sha(output/name) for name in names},onnx_verification=verification)
     atomic_json(output/'payload.json',manifest)
-    atomic_json(releases/'best-export.json',dict(checkpoint=str((output/'checkpoint.pt').relative_to(releases)),
+    record=dict(checkpoint=str((output/'checkpoint.pt').relative_to(releases)),
         checkpoint_sha256=sha(output/'checkpoint.pt'),source_checkpoint_sha256=selection['source_checkpoint_sha256'],
-        step=selection['step'],cohort=selection['cohort'],loss=selection['loss'],kind=selection['kind']))
+        step=selection['step'],cohort=selection['cohort'],loss=selection['loss'],kind=selection['kind'],
+        protected_cohorts=selection['protected_cohorts'])
+    immutable_json(output/'release-record.json',record)
+    if selection['promote_export']:
+        previous=releases/'best-export.json'
+        if previous.exists():
+            immutable_json(releases/'history'/(uuid4().hex+'.json'),json.loads(previous.read_text()))
+        immutable_json(releases/'history'/(uuid4().hex+'.json'),record)
+        atomic_json(previous,record)
     atomic_json(output/'status.json',dict(stage='onnx_ready_device_compile_pending',onnx_ready=True,runtime_ready=False,driving_qualified=False,
         checkpoint_step=selection['step'],checkpoint_kind=selection['kind'],validation_loss=selection['loss'],baseline_loss=selection['baseline_loss']))
-    atomic_json(releases/'latest.json',dict(directory=str(output),step=selection['step'],runtime_ready=False))
+    atomic_json(releases/'last-request.json',dict(directory=str(output),step=selection['step'],runtime_ready=False))
+    if selection['promote_export']:
+        atomic_json(releases/'latest.json',dict(directory=str(output),step=selection['step'],runtime_ready=False))
     event('onnx_ready',directory=str(output),step=selection['step'])
     return output
 
@@ -273,10 +327,27 @@ def ssh_command(host,arguments):
 
 
 def compile_remote(output,device):
+    output=Path(output).resolve()
+    with run_lock(output.parent):
+        return _compile_remote(output,device)
+
+
+def _compile_remote(output,device):
     manifest=json.loads((output/'payload.json').read_text())
     from .device_build import check_files
     check_files(output,manifest)
-    remote=f'/data/media/0/cd210-centerline-exports/{output.name}'
+    status_path=output/'status.json'
+    status=json.loads(status_path.read_text()) if status_path.exists() else {}
+    if status.get('runtime_ready'):
+        archive=Path(status['archive']).resolve()
+        if output not in archive.parents or sha(archive)!=status['archive_sha256']:
+            raise ValueError('previous successful compiled archive failed integrity verification')
+        event('c3x_package_already_ready',archive=str(archive))
+        return
+    attempt=uuid4().hex
+    build=output/'builds'/attempt
+    build.mkdir(parents=True)
+    remote=f'/data/media/0/cd210-centerline-exports/{output.name}-{attempt}'
     try:
         subprocess.run(ssh_command(device,['mkdir','-p',remote]),check=True,timeout=20,capture_output=True,text=True)
     except (subprocess.SubprocessError,OSError) as error:
@@ -287,22 +358,22 @@ def compile_remote(output,device):
         subprocess.run(['scp','-q','-o','BatchMode=yes',str(output/name),f'{device}:{remote}/{name}'],check=True,timeout=240)
     command=ssh_command(device,['/usr/local/venv/bin/python',f'{remote}/device_build.py','--package',remote])
     event('compiling_on_c3x',device=device,remote=remote)
-    with (output/'device-build.log').open('w',encoding='utf-8') as log:
+    with (build/'device-build.log').open('x',encoding='utf-8') as log:
         process=subprocess.Popen(command,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,encoding='utf-8',errors='replace')
         for line in process.stdout:
             log.write(line);log.flush();print(line,end='',flush=True)
         code=process.wait()
-    transfer=subprocess.run(['scp','-q','-r','-o','BatchMode=yes',f'{device}:{remote}/compiled',str(output)],timeout=240)
-    if transfer.returncode or not (output/'compiled/device-report.json').exists():
-        raise RuntimeError(f'c3x build exited {code} without a complete report; see {output / "device-build.log"}')
-    report=json.loads((output/'compiled/device-report.json').read_text())
+    transfer=subprocess.run(['scp','-q','-r','-o','BatchMode=yes',f'{device}:{remote}/compiled',str(build)],timeout=240)
+    if transfer.returncode or not (build/'compiled/device-report.json').exists():
+        raise RuntimeError(f'c3x build exited {code} without a complete report; see {build / "device-build.log"}')
+    report=json.loads((build/'compiled/device-report.json').read_text())
     if report['source_payload_sha256']!=sha(output/'payload.json'):raise ValueError('device compiled a different source package')
     for name,digest in report['artifacts'].items():
-        if sha(output/'compiled'/name)!=digest:raise ValueError('downloaded compiled artifact hash mismatch')
+        if sha(build/'compiled'/name)!=digest:raise ValueError('downloaded compiled artifact hash mismatch')
     if code or not report['runtime_ready']:raise RuntimeError('c3x runtime checks failed; see device-report.json')
-    archive=output/'cd210-c3x.zip'
-    with zipfile.ZipFile(archive,'w',zipfile.ZIP_DEFLATED) as stream:
-        for path in sorted((output/'compiled').glob('*')):
+    archive=build/'cd210-c3x.zip'
+    with zipfile.ZipFile(archive,'x',zipfile.ZIP_DEFLATED) as stream:
+        for path in sorted((build/'compiled').glob('*')):
             if path.is_file():stream.write(path,path.name)
     atomic_json(output/'status.json',dict(stage='c3x_runtime_verified',onnx_ready=True,runtime_ready=True,driving_qualified=False,
         archive=str(archive),archive_sha256=sha(archive),device=device,checkpoint_step=manifest['step']))
@@ -310,6 +381,13 @@ def compile_remote(output,device):
     latest=output.parent/'latest.json'
     if latest.exists() and json.loads(latest.read_text()).get('directory')==str(output):
         atomic_json(latest,dict(directory=str(output),step=manifest['step'],runtime_ready=True,archive=str(archive)))
+        runtime_record=dict(directory=str(output),step=manifest['step'],runtime_ready=True,
+            archive=str(archive),archive_sha256=sha(archive))
+        best_runtime=output.parent/'best-runtime.json'
+        if best_runtime.exists():
+            immutable_json(output.parent/'history'/(uuid4().hex+'.json'),json.loads(best_runtime.read_text()))
+        immutable_json(output.parent/'history'/(uuid4().hex+'.json'),runtime_record)
+        atomic_json(best_runtime,runtime_record)
     event('c3x_package_ready',archive=str(archive),driving_qualified=False)
 
 
@@ -322,13 +400,12 @@ def main():
     parser.add_argument('--resume',type=Path)
     args=parser.parse_args()
     args.releases=args.releases.resolve()
-    with run_lock(args.releases):
-        output=args.resume.resolve() if args.resume else prepare(args.run_dir.resolve(),args.releases)
-        if not args.onnx_only:
-            try:compile_remote(output,args.device)
-            except DeviceUnavailable as error:
-                event('device_offline_compile_pending',directory=str(output),device=args.device,message=str(error))
-                return 3
+    output=args.resume.resolve() if args.resume else prepare(args.run_dir.resolve(),args.releases)
+    if not args.onnx_only:
+        try:compile_remote(output,args.device)
+        except DeviceUnavailable as error:
+            event('device_offline_compile_pending',directory=str(output),device=args.device,message=str(error))
+            return 3
     return 0
 
 

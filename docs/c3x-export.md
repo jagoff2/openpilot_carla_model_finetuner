@@ -32,18 +32,27 @@ export. `-DeviceHost` can override the default SSH address when needed.
 
 ## What “best” means
 
-The exporter compares the committed training checkpoint, an older retained slot
-when available, the trainer's promoted `best.pt`, the previous best export, and
-original CD210. Every candidate is evaluated against the **same current held-out
-validation cohort**. No training or test examples are used to rank candidates.
-It selects the lowest direct centerline loss, with newer steps breaking exact
-ties. It cannot recover checkpoints already discarded by the trainer.
+The exporter compares the committed training checkpoint, the older resume slot,
+all preserved better-than-stock validation candidates, the previous best export,
+and original CD210 on the same current held-out validation cohort. Training and
+test examples are never used to rank candidates.
 
-If no fine-tuned candidate improves on original CD210, the export contains
-original CD210 weights and explicitly reports `checkpoint_kind: original_cd210`
-and step 0. `selection.json` records candidate scores, the frozen baseline score,
-validation manifest hashes and checkpoint identities. A partial validation set
-does not establish general driving improvement.
+A new export best must strictly improve on both stock and the current incumbent
+and must not regress on any earlier promotion cohort. Ties keep the incumbent;
+a stock tie keeps stock. If there is no qualifying improvement, the exporter
+returns the existing best package unchanged and writes the new comparison to a
+separate directory. On the first export, stock remains the fallback when no
+fine-tuned candidate beats it. Existing artifacts are never overwritten by this
+selection process, including when a changed validation set changes rankings.
+
+`best-export.json` is the authoritative selected-checkpoint pointer. `latest.json`
+points to the best promoted package, while `last-request.json` records the most
+recent request and comparison. `best-runtime.json` retains the last successfully
+compiled best package while a newer ONNX candidate awaits compilation. Previous
+pointer records are retained in `history/`. `selection.json` records scores,
+validation manifest hashes and checkpoint identities. These scores measure the
+held-out centerline objective; partial validation does not establish driving
+qualification.
 
 ## Files and verification
 
@@ -61,10 +70,12 @@ Each request produces an immutable checkpoint snapshot and model artifacts under
   a finite 120-frame native ONNX recurrent trace using validation footage.
 - `payload.json`, `verification.npz`, and `device_build.py`: hash-bound input for
   native device compilation. Metadata PKLs alone are not executable models.
-- `compiled\`: created after native compilation, containing vision and policy
+- `builds/<attempt>/compiled/`: created for each native build, containing vision and policy
   executable `*_tinygrad.pkl` files, metadata, `device-report.json`, the recorded
   device trace, and `bundle.json` when runtime checks pass.
-- `cd210-c3x.zip`: compiled package, produced only after successful device checks.
+- `builds/<attempt>/cd210-c3x.zip`: compiled package, produced only after successful device checks.
+  Failed attempts retain their separate diagnostics. Resuming a successful package
+  verifies its archive and returns it without rebuilding or overwriting ONNX/PKL files.
 
 The c3x builder uses `/usr/local/venv/bin/python` and the installed Tinygrad runtime
 under `/data/iqpilot/artifacts/package_runtime`. It requires device type `tizi`,
