@@ -4,6 +4,9 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 import hashlib
 import json
+import os
+import tempfile
+import time
 from .settings import path_setting
 
 PROJECT = Path(__file__).resolve().parents[1]
@@ -53,14 +56,38 @@ def sha256_file(path):
     return digest.hexdigest()
 
 
+def _replace_json_file(tmp, path, timeout=10.0):
+    """Keep atomic publication while short-lived Windows readers release handles."""
+    deadline = time.monotonic() + timeout
+    delay = 0.02
+    while True:
+        try:
+            tmp.replace(path)
+            return
+        except OSError as error:
+            # Windows can report either access denied or a sharing/lock violation
+            # when a reader opened the destination without FILE_SHARE_DELETE.
+            remaining = deadline - time.monotonic()
+            if getattr(error, "winerror", None) not in (5, 32, 33) or remaining <= 0:
+                raise
+            time.sleep(min(delay, remaining))
+            delay = min(delay * 2, 0.25)
+
+
 def write_json(path, document):
+    """Publish a complete JSON document without colliding with another writer."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    with tmp.open("w", encoding="utf-8") as stream:
-        json.dump(document, stream, indent=2, sort_keys=True, allow_nan=False)
-        stream.write("\n")
-        stream.flush()
-        import os
-        os.fsync(stream.fileno())
-    tmp.replace(path)
+    tmp = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                prefix=path.name + ".", suffix=".tmp", delete=False) as stream:
+            tmp = Path(stream.name)
+            json.dump(document, stream, indent=2, sort_keys=True, allow_nan=False)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        _replace_json_file(tmp, path)
+    finally:
+        if tmp is not None:
+            tmp.unlink(missing_ok=True)
