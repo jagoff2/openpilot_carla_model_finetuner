@@ -37,6 +37,11 @@ all preserved better-than-stock validation candidates, the previous best export,
 and original CD210 on the same current held-out validation cohort. Training and
 test examples are never used to rank candidates.
 
+Selection uses lateral centerline loss + 0.25 * heading loss + boundary-clearance
+loss (`lateral_geometry_v1`). Forward-progress drift and velocity changes are
+diagnostics only and never influence ranking or tie-breaking. Every retained
+candidate is rescored on this metric, including legacy exports.
+
 A new export best must strictly improve on both stock and the current incumbent
 and must not regress on any earlier promotion cohort. Ties keep the incumbent;
 a stock tie keeps stock. If there is no qualifying improvement, the exporter
@@ -51,7 +56,7 @@ recent request and comparison. `best-runtime.json` retains the last successfully
 compiled best package while a newer ONNX candidate awaits compilation. Previous
 pointer records are retained in `history/`. `selection.json` records scores,
 validation manifest hashes and checkpoint identities. These scores measure the
-held-out centerline objective; partial validation does not establish driving
+held-out lateral objective; partial validation does not establish driving
 qualification.
 
 ## Files and verification

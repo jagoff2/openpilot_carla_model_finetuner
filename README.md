@@ -224,3 +224,12 @@ compiled best package while a new candidate awaits device compilation. Final
 training completion also exports the best selection, never simply the last step.
 See [checkpoint retention](docs/production-training.md) and
 [export selection](docs/c3x-export.md) for paths and migration instructions.
+
+Checkpoint ranking, promotion and export selection use **lateral quality only**:
+`lateral_geometry_v1 = lateral_loss + 0.25 * heading_loss + clearance_loss`.
+Forward-progress error, speed changes, and other longitudinal diagnostics do not
+rank candidates or break ties. `loss` and `baseline_loss` in new validation and
+selection reports refer to this lateral score; `optimization_loss` separately
+includes the existing training guard against shortening the plan to evade lateral
+supervision. Earlier reports without `selection_metric` retain their historical
+combined score and are never compared directly with new lateral scores.

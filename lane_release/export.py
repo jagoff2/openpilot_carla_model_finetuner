@@ -27,7 +27,7 @@ from lane_training.cd210_model import create_model,load_checkpoint,save_checkpoi
 from lane_training.onnx_model import ReleasedModel
 from lane_training.production import atomic_json,discover,evaluate_episode,run_lock
 from lane_training.checkpoint_store import (checkpoint_path, immutable_copy,
-    immutable_json, can_promote, protected_cohorts)
+    immutable_json, can_promote, protected_cohorts, SELECTION_METRIC)
 from lane_training.verify_cd210 import float32_graph,runtime
 
 PROJECT=Path(__file__).resolve().parents[1]
@@ -87,6 +87,8 @@ def snapshot_previous(run,latest,output):
 def choose(scored):
     if not scored or any(not np.isfinite(r['loss']) for r in scored):
         raise ValueError('best selection requires finite held-out validation scores')
+    if len({r.get('selection_metric') for r in scored}) != 1:
+        raise ValueError('all candidates require the same selection metric')
     return min(scored,key=lambda r:(r['loss'],not r.get('incumbent_export',False),
         r.get('kind')!='original_cd210',r['step']))
 
@@ -114,7 +116,7 @@ def select_checkpoint(run,output,releases):
             if name=='resume.json':candidates.extend(snapshot_previous(run,snapshot,output))
     for path in sorted((run/'preserved/records').glob('*.json')):
         record=json.loads(path.read_text())
-        if record.get('kind') not in ('validated_candidate','previous_best'):continue
+        if record.get('kind') not in ('validated_candidate','previous_best','pre_preservation_migration'):continue
         if any(c['source_checkpoint_sha256']==record['sha256'] for c in candidates):continue
         dest=output/f'snapshot-preserved-{record["sha256"]}.pt'
         immutable_copy(checkpoint_path(run,record),dest,record['sha256'])
@@ -159,20 +161,27 @@ def select_checkpoint(run,output,releases):
         labels=sum(r['labels'] for r in measurements)
         if not labels:raise ValueError('validation contains no supported labels')
         scored.append(dict(**candidate,cohort=cohort,labels=labels,
+            selection_metric=SELECTION_METRIC,
             loss=sum(r['loss']*r['labels'] for r in measurements)/labels,
-            baseline_loss=sum(r['baseline_loss']*r['labels'] for r in measurements)/labels,validation=measurements))
+            baseline_loss=sum(r['baseline_loss']*r['labels'] for r in measurements)/labels,
+            optimization_loss=sum(r['optimization_loss']*r['labels'] for r in measurements)/labels,
+            baseline_optimization_loss=sum(r['baseline_optimization_loss']*r['labels'] for r in measurements)/labels,
+            progress_guard_loss=sum(r['progress_guard_loss']*r['labels'] for r in measurements)/labels,
+            validation=measurements))
         del model
     baseline_path=output/'snapshot-original.pt'
     baseline_sha=save_checkpoint(reference,baseline_path,training_state=dict(config=training_config,export_baseline=True))
     baseline=scored[0]['baseline_loss']
     scored.append(dict(snapshot=str(baseline_path),source_checkpoint_sha256=baseline_sha,step=0,kind='original_cd210',
+        selection_metric=SELECTION_METRIC,
         cohort=cohort,labels=scored[0]['labels'],loss=baseline,baseline_loss=baseline,
         validation=[dict(manifest=r['manifest'],manifest_sha256=r['manifest_sha256'],labels=r['labels'],
             loss=r['baseline_loss']) for r in scored[0]['validation']]))
     selected=select_best(scored)
     selected['improves_original']=selected['loss']<selected['baseline_loss']
     selected['test_split_used']=False
-    event('selected',kind=selected['kind'],step=selected['step'],validation_loss=selected['loss'],baseline_loss=selected['baseline_loss'])
+    event('selected',kind=selected['kind'],step=selected['step'],selection_metric=SELECTION_METRIC,
+        validation_loss=selected['loss'],baseline_loss=selected['baseline_loss'])
     model,package=load_checkpoint(selected['snapshot'])
     package['optimizer']=None
     checkpoint=output/'checkpoint.pt';torch.save(package,checkpoint)
@@ -284,6 +293,16 @@ def _prepare(run,releases):
             retained=(releases/record['checkpoint']).resolve().parent
             from .device_build import check_files
             check_files(retained,json.loads((retained/'payload.json').read_text()))
+            # Rebind score metadata after a metric/cohort change, keeping model
+            # and package bytes, paths and the previous record permanently intact.
+            if record.get('selection_metric') != SELECTION_METRIC or record['cohort'] != selection['cohort']:
+                immutable_json(releases/'history'/(uuid4().hex+'.json'),record)
+                record.update(selection_metric=SELECTION_METRIC,loss=selection['loss'],
+                    baseline_loss=selection['baseline_loss'],cohort=selection['cohort'],
+                    protected_cohorts=selection['protected_cohorts'],
+                    comparison=str((output/'selection.json').relative_to(releases)))
+                immutable_json(output/'rescored-release-record.json',record)
+                atomic_json(releases/'best-export.json',record)
             atomic_json(output/'status.json',dict(stage='retained_previous_best',directory=str(retained),
                 reason='no comparable strict improvement',runtime_ready=False,driving_qualified=False))
             atomic_json(releases/'last-request.json',dict(directory=str(retained),comparison=str(output)))
@@ -302,6 +321,7 @@ def _prepare(run,releases):
         files={name:sha(output/name) for name in names},onnx_verification=verification)
     atomic_json(output/'payload.json',manifest)
     record=dict(checkpoint=str((output/'checkpoint.pt').relative_to(releases)),
+        selection_metric=SELECTION_METRIC,baseline_loss=selection['baseline_loss'],
         checkpoint_sha256=sha(output/'checkpoint.pt'),source_checkpoint_sha256=selection['source_checkpoint_sha256'],
         step=selection['step'],cohort=selection['cohort'],loss=selection['loss'],kind=selection['kind'],
         protected_cohorts=selection['protected_cohorts'])
@@ -313,6 +333,7 @@ def _prepare(run,releases):
         immutable_json(releases/'history'/(uuid4().hex+'.json'),record)
         atomic_json(previous,record)
     atomic_json(output/'status.json',dict(stage='onnx_ready_device_compile_pending',onnx_ready=True,runtime_ready=False,driving_qualified=False,
+        selection_metric=SELECTION_METRIC,
         checkpoint_step=selection['step'],checkpoint_kind=selection['kind'],validation_loss=selection['loss'],baseline_loss=selection['baseline_loss']))
     atomic_json(releases/'last-request.json',dict(directory=str(output),step=selection['step'],runtime_ready=False))
     if selection['promote_export']:

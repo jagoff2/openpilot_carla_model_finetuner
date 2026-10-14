@@ -25,7 +25,7 @@ from .cd210_model import create_model, export_onnx, load_checkpoint, save_checkp
 from .smoke import parameter_digest
 from .targets import episode_corridors
 from .checkpoint_store import (checkpoint_path, immutable_json, preserve,
-    protect_validation, protected_cohorts)
+    protect_validation, protected_cohorts, SELECTION_METRIC, selection_report, lateral_score)
 from lane_dataset.config import write_json
 from uuid import uuid4
 
@@ -162,8 +162,8 @@ def restore(directory,cfg):
     return model,optimizer,state
 
 
-def migrate_preservation(directory, cfg):
-    """Explicit persistence-only migration; archive both slots before rebinding code."""
+def migrate_preservation(directory, cfg, *, lateral_selection=False):
+    """Explicit source migration; archive both slots before rebinding code."""
     directory = Path(directory)
     model, optimizer, state = restore(directory, cfg)
     current = {p.name:digest(p) for p in Path(__file__).parent.glob('*.py')}
@@ -171,7 +171,9 @@ def migrate_preservation(directory, cfg):
     changed = {name for name in previous.keys() | current.keys() if previous.get(name) != current.get(name)}
     if not changed:
         return None
-    if not changed <= {'production.py', 'cd210_model.py', 'checkpoint_store.py'}:
+    allowed = {'production.py', 'checkpoint_store.py'} if lateral_selection else {
+        'production.py', 'cd210_model.py', 'checkpoint_store.py'}
+    if not changed <= allowed:
         raise ValueError(f'preservation migration refuses unrelated training changes: {sorted(changed)}')
     saved = []
     for source in sorted(directory.glob('checkpoint-[01].pt')):
@@ -184,9 +186,11 @@ def migrate_preservation(directory, cfg):
         preserve(directory,record,validation=record,kind='previous_best')
     parameter_sha = parameter_digest(model)
     audit = dict(step=state['step'],previous_sources=previous,current_sources=current,
-        preserved=saved,parameter_sha256=parameter_sha,optimizer_unchanged=True)
+        preserved=saved,parameter_sha256=parameter_sha,optimizer_unchanged=True,
+        purpose='lateral_only_selection' if lateral_selection else 'checkpoint_preservation')
     immutable_json(directory/'preserved/migrations'/(uuid4().hex+'.json'),audit)
     state['source_hashes'] = current
+    state['selection_metric'] = SELECTION_METRIC
     state['last_validation'] = None
     commit(directory,model,optimizer,state)
     return audit
@@ -213,7 +217,7 @@ def evaluate_episode(episode,student,reference,progress=None):
     baseline,baseline_report = model_centerline_loss(base,base,corridors,adapter=ROLLOUT_PLAN)
     if not report['valid_labels']: raise ValueError('validation episode has no supported centerline labels')
     lateral = ROLLOUT_PLAN(prediction).xy[:,:,1]-ROLLOUT_PLAN(base).xy[:,:,1]
-    return dict(loss=float(loss),baseline_loss=float(baseline),labels=report['valid_labels'],
+    return dict(**selection_report(loss,baseline,report,baseline_report),labels=report['valid_labels'],
         geometry=report,baseline_geometry=baseline_report,
         path_lateral_change_mean_m=float(lateral.abs().mean()),
         velocity_change_mean=float((prediction[:,:495].reshape(-1,33,15)[:,:,3:6]-base[:,:495].reshape(-1,33,15)[:,:,3:6]).abs().mean()),
@@ -233,6 +237,7 @@ class Trainer:
             self.model = create_model().eval()
             self.optimizer = make_optimizer(self.model,cfg)
             self.state = dict(config=asdict(cfg),step=0,counts={},known={},failed={},last_validation=None,
+                selection_metric=SELECTION_METRIC,
                 initial_parameter_sha256=parameter_digest(self.model),source_hashes={p.name:digest(p) for p in Path(__file__).parent.glob('*.py')})
             commit(self.directory,self.model,self.optimizer,self.state)
         current_sources = {p.name:digest(p) for p in Path(__file__).parent.glob('*.py')}
@@ -259,6 +264,7 @@ class Trainer:
             collection = {k:collection[k] for k in ('accepted_total','pid','active_workers','updated')}
         except (OSError,ValueError,KeyError): collection = None
         atomic_json(self.directory/'status.json',dict(updated=time.time(),pid=os.getpid(),phase=phase,
+            selection_metric=SELECTION_METRIC,
             step=self.state['step'],optimizer_steps=self.state['step'],device='cpu',cpu_threads=self.cfg.cpu_threads,
             rss_bytes=process.memory_info().rss,cpu_seconds=sum(process.cpu_times()[:2]),
             uptime_seconds=time.time()-self.started,active=self.active,training_config=asdict(self.cfg),
@@ -296,6 +302,9 @@ class Trainer:
         pointer = commit(self.directory,self.model,self.optimizer,self.state)
         metrics = dict(episode=row['id'],manifest_sha256=row['sha256'],pass_number=self.state['counts'][row['sha256']],
             loss_before_update=report['loss'],valid_labels=report['valid_labels'],backward_calls=report['backward_calls'],
+            selection_metric=SELECTION_METRIC,
+            lateral_score_before_update=sum(lateral_score(r) for r in report['label_diagnostics'])/report['valid_labels'],
+            progress_guard_before_update=sum(r['progress_loss'] for r in report['label_diagnostics'])/report['valid_labels'],
             nonzero_gradients=gradients,gradient_norm_before_clip=norm,parameter_sha256_before=before,
             parameter_sha256_after=after,checkpoint=pointer,elapsed_seconds=time.perf_counter()-start)
         self.log('optimizer_step_committed',**metrics)
@@ -315,8 +324,13 @@ class Trainer:
             results.append(dict(episode=row['id'],manifest_sha256=row['sha256'],**result))
         labels = sum(r['labels'] for r in results)
         result = dict(step=self.state['step'],cohort=cohort,episodes=len(results),labels=labels,
+            selection_metric=SELECTION_METRIC,
             loss=sum(r['loss']*r['labels'] for r in results)/labels,
             baseline_loss=sum(r['baseline_loss']*r['labels'] for r in results)/labels,
+            optimization_loss=sum(r['optimization_loss']*r['labels'] for r in results)/labels,
+            baseline_optimization_loss=sum(r['baseline_optimization_loss']*r['labels'] for r in results)/labels,
+            progress_guard_loss=sum(r['progress_guard_loss']*r['labels'] for r in results)/labels,
+            baseline_progress_guard_loss=sum(r['baseline_progress_guard_loss']*r['labels'] for r in results)/labels,
             test_split_used=False,rows=results)
         return result
 
@@ -329,7 +343,8 @@ class Trainer:
         if best_path.exists():
             best = json.loads(best_path.read_text())
             preserve(self.directory, best, validation=best, kind='previous_best')
-            if best['cohort'] == result['cohort'] and best.get('rows'):
+            if (best['cohort'] == result['cohort'] and best.get('rows')
+                    and best.get('selection_metric') == SELECTION_METRIC):
                 incumbent = best
             else:
                 model, _ = load_checkpoint(checkpoint_path(self.directory, best))
@@ -363,7 +378,8 @@ class Trainer:
             row = select_next(rows,self.state['counts'],self.cfg.passes,self.state['failed'])
             last = self.state['last_validation']
             cohort = hashlib.sha256(''.join(sorted(r['sha256'] for r in rows if r['split']=='validation')).encode()).hexdigest()
-            validation_due = (last is None or (last['cohort']!=cohort) or self.state['step']-last['step']>=self.cfg.validation_interval
+            validation_due = (last is None or last.get('selection_metric') != SELECTION_METRIC
+                or (last['cohort']!=cohort) or self.state['step']-last['step']>=self.cfg.validation_interval
                 or (self.state['step']==1 and last['step']==0) or (row is None and last['step']!=self.state['step']))
             if validation_due and any(r['split']=='validation' for r in rows):
                 self.validate(rows)
@@ -398,6 +414,8 @@ def main():
     parser.add_argument('--max-steps',type=int)
     parser.add_argument('--migrate-preservation',action='store_true',
         help='archive current checkpoints and migrate only persistence/export source bindings')
+    parser.add_argument('--migrate-lateral-selection',action='store_true',
+        help='preserve checkpoints and switch validation/promotion to lateral quality only')
     args = parser.parse_args()
     cfg = TrainingConfig(corpus=str(args.corpus.resolve()),cpu_threads=args.cpu_threads,passes=args.passes)
     torch.set_num_threads(cfg.cpu_threads); torch.set_num_interop_threads(1)
@@ -405,8 +423,8 @@ def main():
     with run_lock(args.run_dir):
         trainer = None
         try:
-            if args.migrate_preservation:
-                migrate_preservation(args.run_dir,cfg)
+            if args.migrate_preservation or args.migrate_lateral_selection:
+                migrate_preservation(args.run_dir,cfg,lateral_selection=args.migrate_lateral_selection)
             trainer = Trainer(cfg,args.run_dir)
             trainer.run(max_steps=args.max_steps)
         except BaseException as error:

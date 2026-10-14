@@ -173,7 +173,8 @@ def test_training_completion_exports_best_not_latest(tmp_path,monkeypatch):
     assert json.loads((tmp_path/'completion.json').read_text())['exports'].endswith('best')
 
 
-def test_preservation_migration_keeps_weights_optimizer_step_and_sampler(tmp_path,monkeypatch):
+@pytest.mark.parametrize('lateral_selection',[False,True])
+def test_preservation_migration_keeps_weights_optimizer_step_and_sampler(tmp_path,monkeypatch,lateral_selection):
     from dataclasses import asdict
     from test_production_training import Tiny
     model=Tiny();cfg=production.TrainingConfig(corpus=str(tmp_path))
@@ -193,11 +194,13 @@ def test_preservation_migration_keeps_weights_optimizer_step_and_sampler(tmp_pat
         return restored,package
     monkeypatch.setattr(production,'load_checkpoint',load)
     before=production.parameter_digest(model)
-    audit=production.migrate_preservation(tmp_path,cfg)
+    audit=production.migrate_preservation(tmp_path,cfg,lateral_selection=lateral_selection)
     restored,restored_optimizer,saved=production.restore(tmp_path,cfg)
     assert production.parameter_digest(restored)==before==audit['parameter_sha256']
     assert saved['step']==8 and saved['counts']=={'episode':2}
     assert saved['last_validation'] is None
+    assert saved['selection_metric']==production.SELECTION_METRIC
+    assert audit['purpose']==('lateral_only_selection' if lateral_selection else 'checkpoint_preservation')
     assert len(audit['preserved'])==2
     for old,new in zip(optimizer.state.values(),restored_optimizer.state.values()):
         assert old.keys()==new.keys()

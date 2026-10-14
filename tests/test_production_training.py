@@ -106,6 +106,9 @@ def test_validation_is_forward_only_and_never_touches_optimizer(monkeypatch):
     before=p.parameter_digest(student)
     result=p.evaluate_episode(episode,student,original)
     assert result['labels']==2 and result['loss']>0
+    assert result['selection_metric']==p.SELECTION_METRIC
+    assert result['loss']==pytest.approx(p.lateral_score(result['geometry']))
+    assert result['optimization_loss']==pytest.approx(result['loss']+result['progress_guard_loss'],abs=1e-5)
     assert p.parameter_digest(student)==before
     assert all(x.grad is None for x in student.parameters())
     assert all(x.grad is None for x in original.parameters())

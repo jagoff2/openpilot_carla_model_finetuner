@@ -11,6 +11,26 @@ from uuid import uuid4
 
 from lane_dataset.config import sha256_file, write_json
 
+SELECTION_METRIC = 'lateral_geometry_v1'
+
+
+def lateral_score(geometry):
+    """Lateral quality only; forward progress remains a separate training guard."""
+    from .centerline import LossConfig
+    cfg = LossConfig()
+    return float(cfg.lateral_weight * geometry['lateral_loss']
+        + cfg.heading_weight * geometry['heading_loss']
+        + cfg.clearance_weight * geometry['clearance_loss'])
+
+
+def selection_report(optimization_loss, baseline_optimization_loss, geometry, baseline_geometry):
+    return dict(selection_metric=SELECTION_METRIC,
+        loss=lateral_score(geometry), baseline_loss=lateral_score(baseline_geometry),
+        optimization_loss=float(optimization_loss),
+        baseline_optimization_loss=float(baseline_optimization_loss),
+        progress_guard_loss=float(geometry['progress_loss']),
+        baseline_progress_guard_loss=float(baseline_geometry['progress_loss']))
+
 
 def immutable_copy(source, destination, expected=None):
     """Publish without replacement; even a concurrent writer cannot clobber a file."""
@@ -88,6 +108,8 @@ def can_promote(candidate, incumbent=None):
     """Strict current-cohort win, with no regression on earlier promotion cohorts."""
     if not all(math.isfinite(candidate[k]) for k in ('loss', 'baseline_loss')):
         raise ValueError('promotion requires finite validation scores')
+    if incumbent is not None and candidate.get('selection_metric') != incumbent.get('selection_metric'):
+        raise ValueError('incumbent must be rescored with the same selection metric')
     if not candidate['loss'] < candidate['baseline_loss']:
         return False
     if incumbent is None:
@@ -135,4 +157,11 @@ def protect_validation(directory, pointer, result, incumbent=None):
             record['protected_cohorts'] = protected_cohorts(result, incumbent)
             immutable_json(directory / 'preserved' / 'promotions' / (uuid4().hex + '.json'), record)
             write_json(best_path, record)
+    if not promoted and old is not None and (
+            old.get('selection_metric') != incumbent.get('selection_metric')
+            or old['cohort'] != incumbent['cohort']):
+        # Refresh scores for the same immutable winner, never its model bytes.
+        refreshed = preserve(directory, old, validation=incumbent, kind='previous_best')
+        immutable_json(directory / 'preserved' / 'rescored' / (uuid4().hex + '.json'), refreshed)
+        write_json(best_path, refreshed)
     return promoted

@@ -93,3 +93,26 @@ Finite gradients and improving validation loss do not establish driving release
 qualification. A training completion report explicitly records that distinction.
 Initial partial-corpus validation is provisional because required scenario and
 independent-geometry coverage is still growing.
+
+## Lateral-only model selection
+
+Validation, checkpoint promotion and export use `selection_metric: lateral_geometry_v1`.
+The score is lateral centerline loss plus 0.25 times heading loss plus boundary
+clearance loss, with the same default component scales as training. `loss` and
+`baseline_loss` contain this score. Longitudinal quality does not contribute to
+ranking, prior-cohort regression checks or tie-breaking. The optimization objective
+still includes the existing forward-progress guard so shortening the predicted
+path is discouraged during training; it appears separately as `optimization_loss`
+and `progress_guard_loss`. Training logs also expose `lateral_score_before_update`
+and `progress_guard_before_update` separately.
+
+An existing run can migrate without resetting weights, optimizer, step or sampling:
+
+```powershell
+python -m lane_training.production --run-dir runs/cd210-centerline-production --migrate-lateral-selection
+```
+
+First stop its trainer with `stop.request`, wait for `stopped_at_checkpoint`, and
+remove the request. Both resume slots are archived before migration. Validation
+is rerun, and old incumbents are rescored under the new metric before comparison.
+Original model files and historical reports remain intact.
