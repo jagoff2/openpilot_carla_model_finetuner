@@ -279,6 +279,13 @@ and predicates now become native JSON numbers and booleans; the acceptance
 limits are unchanged. Re-admission reuses retained raw recordings and reruns
 independent checks before publication.
 
+The repaired admission published **40 unmarked-road training labels** from that
+capture, with no remaining checks or errors, including verification by the
+actual training interpreter. The road-52 pedestrian retry passed live grounding:
+its original envelope straddled a 0.152 m curb step, and a measured 0.05 m outward
+adjustment reduced all four support gaps below 0.0007 m. Its full recording and
+admission are separate from this startup result.
+
 The road-52 parked-car capture produced six candidate labels but lacks observed
 departure and passing coverage. Correct serialization does not qualify that
 episode. Its capture remains retained for diagnosis.
