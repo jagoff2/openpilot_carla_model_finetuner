@@ -63,3 +63,34 @@ passed 224 tests. Existing recordings finish under their original source version
 before the automatic policy-v6 update. Whether a
 majority of the newly prioritized routes pass must be measured after capture
 and final admission; map metadata alone cannot establish that result.
+
+At 80 accepted labels, the first two policy-v6 jobs were still capturing, with
+no control rejections in their progress logs. The unchanged counter at that
+point was not a new admission rejection. Previous successful captures took
+1,141 to 2,028 seconds before postprocessing for 20 selected labels each.
+Their per-frame timings showed 0.23-0.36 seconds in image conversion/packing
+and 0.36-0.53 seconds in visibility and control, so GPU activity alone was a
+poor measure of collection progress.
+
+Two CPU optimizations preserve the existing evidence contract:
+
+* Run the pinned RGB-to-NV12 producer on even 16-row tiles. Its pointwise
+  operations and 2x2 chroma reductions are unchanged, with smaller temporary
+  arrays. Random full-resolution and negative-stride RGB/BGR inputs must match
+  the original producer byte for byte.
+* Iterate visible history indices instead of every unobserved point, retaining
+  point identity, evidence ordering, causal cutoffs and source-only visibility.
+
+On an accepted recording, seven paired offline measurements gave median RGB
+conversion times of 176 ms before and 74 ms after, and history query times of
+34 ms before and 18 ms after. All image bytes and all support fields matched.
+These are component measurements, not an end-to-end throughput claim. The
+relevant suite passed 230 tests with two existing SLSQP bounds warnings.
+
+`reports.handoff_collector_update` finishes and admits existing captures under
+their original source seal before applying a hash-bound source patch and test
+report. It then resumes both GPU slots concurrently. A slot that finishes first
+waits during this one-time update; the helper does not interrupt its recording.
+If installation fails, it restores the prior files and resumes collection.
+The capture policy number is unchanged because the optimization changes no
+acceptance criterion and should not cause deterministic failures to be retried.

@@ -398,15 +398,19 @@ class EvidenceHistory:
                 raise ValueError("decision frame timestamp mismatch")
             if is_current:
                 current_cameras.add(ref.camera)
-            for local_index, point_id in enumerate(frame.point_ids):
-                index = lookup.get(point_id)
+            # Unobserved points cannot contribute evidence. Iterate only the
+            # visible indices, retaining their original order and exact refs.
+            for local_index in np.flatnonzero(frame.crop_visible):
+                index = lookup.get(frame.point_ids[local_index])
                 if index is None:
                     continue
-                if frame.crop_visible[local_index]:
-                    refs[index].append(ref)
-                    now[index] |= is_current
-                if is_current:
-                    source_now[index] |= bool(frame.source_visible[local_index])
+                refs[index].append(ref)
+                now[index] |= is_current
+            if is_current:
+                for local_index in np.flatnonzero(frame.source_visible):
+                    index = lookup.get(frame.point_ids[local_index])
+                    if index is not None:
+                        source_now[index] = True
         if require_camera_pair and current_cameras != {"narrow", "wide"}:
             raise ValueError("both stock-camera evidence frames required at the decision timestamp")
         supported = np.array([bool(value) for value in refs], dtype=bool)

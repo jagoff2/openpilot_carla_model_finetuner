@@ -68,7 +68,23 @@ def image_to_nv12(image, color_order):
         raise ValueError("synthetic RGB source must be uint8[H,W,3]")
     if color_order not in ("RGB", "BGR"):
         raise ValueError("color_order must explicitly be RGB or BGR")
-    return _rgb_producer()(value if color_order == "RGB" else value[..., ::-1])
+    value = value if color_order == "RGB" else value[..., ::-1]
+    height, width = value.shape[:2]
+    producer = _rgb_producer()
+    if height <= 16 or height % 2 or width % 2:
+        return producer(value)
+    # The pinned producer has only pointwise arithmetic and 2x2 chroma
+    # reductions. Even row tiles preserve every operation and rounding result,
+    # while keeping its float64 temporaries in cache instead of streaming
+    # several full-resolution RGB copies through memory for each camera tick.
+    output = np.empty((height + height // 2, width), dtype=np.uint8)
+    for start in range(0, height, 16):
+        end = min(start + 16, height)
+        packed, _ = producer(value[start:end])
+        packed = packed.reshape((end-start)*3//2, width)
+        output[start:end] = packed[:end-start]
+        output[height+start//2:height+end//2] = packed[end-start:]
+    return output.reshape(-1), NV12Layout(width, height)
 
 
 class StockPreprocessor:
