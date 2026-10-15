@@ -33,6 +33,18 @@ def collision_depth_fixture(images, preprocessor, reference, world, optical_from
                         candidate_pixels.append((x,y))
         measured=[];coordinates=[];samples=[];seen=set();diagnostics=Counter(candidate_pixels=len(candidate_pixels))
         origin=inverse[:3,3]
+        # The fixed 3 m ray start must be above the road. Wide-camera pixels
+        # near the bumper can hit visible road before that start; casting them
+        # from underground instead finds a buried collision mesh. Preselect
+        # rays with the independently surveyed local road plane, never with
+        # measured depth or a favorable depth residual.
+        progress,_=reference.project(origin[:2])
+        ground=reference._center(progress)
+        normal=np.cross(reference._center(progress,1),reference._right(progress)-reference._left(progress))
+        normal/=np.linalg.norm(normal)
+        camera_normal=transform[:3,:3]@normal
+        camera_ground=(transform@np.r_[ground,1.])[:3]
+        plane_distance=float(camera_normal@camera_ground)
         for x,y in candidate_pixels:
             if (x,y) in seen:continue
             seen.add((x,y))
@@ -40,6 +52,11 @@ def collision_depth_fixture(images, preprocessor, reference, world, optical_from
                 diagnostics['not_rendered_road']+=1
                 continue
             ray=np.linalg.solve(profile.K,np.array([x+.5,y+.5,1.]))
+            denominator=float(camera_normal@ray)
+            plane_forward=plane_distance/denominator if abs(denominator)>1e-8 else float('inf')
+            if not 4.<plane_forward<30.:
+                diagnostics['local_road_plane_outside_fixture_range']+=1
+                continue
             # The physical camera is inside the ego collision volume. Begin
             # ahead of that body; all fixture road hits must still be >4 m away.
             ray_start=(inverse@np.r_[ray*3.,1.])[:3]
@@ -48,6 +65,15 @@ def collision_depth_fixture(images, preprocessor, reference, world, optical_from
             # CARLA reports containing collision volumes as a zero-distance
             # NONE hit at the ray origin. It is not a surface intersection.
             hits=[hit for hit in hits if np.linalg.norm(np.array([hit.location.x,hit.location.y,hit.location.z])-ray_start)>1e-3]
+            # Some maps contain invisible, unlabelled collision volumes above
+            # the rendered road. A same-frame Road/RoadLines semantic pixel
+            # lets us ignore NONE volumes, not named physical occluders. The
+            # frontmost remaining road surface must still pass the unchanged
+            # metric depth check; residuals never choose or discard a hit.
+            if tags is not None:
+                labelled=[hit for hit in hits if str(hit.label)!='NONE']
+                diagnostics['unlabelled_collision_hits_ignored']+=len(hits)-len(labelled)
+                hits=labelled
             if not hits:
                 diagnostics['ray_missed']+=1
                 continue
@@ -71,6 +97,7 @@ def collision_depth_fixture(images, preprocessor, reference, world, optical_from
         else:result=dict(qualified=False,reason='insufficient_off_axis_known_surface_samples',depth_mode=None)
         result.update(samples=samples,measured_m=measured,camera_points=np.asarray(coordinates).tolist(),
             fixture='collision-surveyed road interiors at exact sensor pixel rays',ray_start_forward_m=3.,pixel_center_offset=.5,
+            ray_selection='independent_local_road_plane_4_to_30m; same_frame_road_semantics_exclude_NONE_volumes',
             diagnostics=dict(diagnostics),camera_from_world=transform.tolist())
         report[name]=result
     return report

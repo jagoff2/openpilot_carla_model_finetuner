@@ -29,12 +29,37 @@ candidates; the new map-metadata ranking classified 5,134 in its lowest risk
 tier, 1,186 as intermediate, and 3,085 as high risk. These are candidate counts,
 not independent geometry counts or accepted samples.
 
-The fix prioritizes short unpainted gaps in the actual driven portion, then
+The fix prioritizes short unpainted gaps in the actual driven portion, including
+physical warmup, then
 distributes opportunities across families and the separate test-map pool.
 Unpainted curb routes stay eligible. No admission threshold, calibration range,
 student input, source seal, existing recording or checkpoint is changed.
 
-Eighteen targeted scheduling, failure-memory and parallel-worker tests passed.
-The existing recordings continue through the supervisor update. Whether a
+The first ranking omitted early warmup; a Town04 route exposed why that matters.
+Its warmup crossed an unpainted tight junction at 15–33 m, before the painted
+labelled event. The physical initializer deviated over four metres and never
+qualified. The final ranking includes that prefix. The counts above describe the
+initial event/history ranking, not a guarantee of usable warmup or independent
+geometry. Including warmup produces 4,374 low-risk, 1,120 intermediate and 3,911
+high-risk candidates in the same catalogue.
+
+The newly selected routes also reproduced two depth-fixture implementation bugs:
+
+* Wide-camera rays started 3 m forward after the visible near road intersection,
+  then hit a road collider buried 1.25 m below it. A local surveyed-plane check
+  now excludes those rays before any sensor depth is inspected.
+* Town05 narrow-camera rays hit unlabelled invisible collision volumes before
+  the road. A same-frame semantic Road/RoadLines pixel now permits excluding
+  NONE volumes. Named occluders still reject; the nearest remaining road hit
+  must pass the unchanged 0.15 m depth agreement check.
+
+Live comparisons at one failed Town03 and two failed Town05 spawn poses reproduced
+the old failures and passed with the repair in all six camera checks. The largest
+forward-depth residual was 0.000823 m. This establishes the repaired sensor
+preflight at those poses, not full-episode admission.
+
+The relevant controller, admission, visibility, storage and scheduling suite
+passed 224 tests. Existing recordings finish under their original source version
+before the automatic policy-v6 update. Whether a
 majority of the newly prioritized routes pass must be measured after capture
 and final admission; map metadata alone cannot establish that result.

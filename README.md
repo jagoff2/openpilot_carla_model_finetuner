@@ -109,8 +109,8 @@ completed events rejected by the corrected admission checks are retried before
 unproven routes. Warmup frames and recording progress do not increase the accepted
 count; publication follows label and physical checks.
 
-The catalogue schedules routes with continuous painted boundaries before routes
-with long unpainted gaps, distributing opportunities across scenario families and
+The catalogue schedules routes with continuous painted boundaries through warmup
+and the maneuver before routes with long unpainted gaps, distributing opportunities across scenario families and
 the separate Town05 test pool. This avoids spending both workers on short,
 unmarked junction routes while observable curves and straights wait. Curbs and
 road edges remain eligible. Map markings affect scheduling only; RGB/depth
@@ -253,6 +253,10 @@ geometry at exact sensor pixels, including interior road samples visible in the
 narrow camera. Collision rays start beyond the ego vehicle, and depth/road-edge
 measurements use CARLA's half-pixel sensor centers. Initial depth checks allow a
 bounded sensor settling interval.
+Fixture rays are screened with the independently surveyed road plane so a ray
+started beneath near road cannot select a buried surface. When the same-frame
+semantic image confirms road, unlabelled invisible collision volumes are excluded;
+named occluders and all metric depth residual checks remain enforced.
 Warmup and action admission permit a declared 0.1 m/s operating tolerance around
 the unchanged measured calibration range; physical lateral QA remains 3.5 m/s²
 and 5 m/s³. Stopping support uses braking distance plus reaction delay.

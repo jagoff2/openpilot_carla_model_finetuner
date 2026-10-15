@@ -83,13 +83,16 @@ def test_corrected_admission_retries_completed_events_before_unproven_routes(tmp
     assert [task['episode_id'] for task in priority_retries(tmp_path)]==['near','less']
 
 
-def test_depth_fixture_uses_independent_geometry_at_exact_pixels(monkeypatch):
+@pytest.mark.parametrize('invisible_volume',[False,True])
+def test_depth_fixture_uses_independent_geometry_at_exact_pixels(monkeypatch,invisible_volume):
     import sys
     from lane_dataset.depth_fixture import collision_depth_fixture
     from lane_dataset.capture import OPTICAL_FROM_CARLA
     from lane_dataset.geometry import LaneReference
     class Location:
         def __init__(self,x,y,z):self.x,self.y,self.z=x,y,z
+    class Unknown:
+        def __str__(self):return 'NONE'
     labels=SimpleNamespace(Roads=1,RoadLines=2)
     monkeypatch.setitem(sys.modules,'carla',SimpleNamespace(Location=Location,CityObjectLabel=labels))
     class World:
@@ -98,8 +101,16 @@ def test_depth_fixture_uses_independent_geometry_at_exact_pixels(monkeypatch):
             if a[0]<2.5:  # Ego collision box surrounds the mounted camera.
                 return [SimpleNamespace(location=Location(*a),label=99)]
             t=-a[2]/(b[2]-a[2])
-            return [] if not 0<t<1 else [SimpleNamespace(location=Location(*a),label=99),
-                SimpleNamespace(location=Location(*(a+t*(b-a))),label=1)]
+            hits=[SimpleNamespace(location=Location(*a),label=Unknown())]
+            if invisible_volume:
+                hits.append(SimpleNamespace(location=Location(*(a+.2*t*(b-a))),label=Unknown()))
+            # A second, buried road layer is visible to rays started beneath
+            # the road. It must never be compared with the foreground pixels.
+            if 0<t<1:hits.append(SimpleNamespace(location=Location(*(a+t*(b-a))),label=1))
+            else:
+                underground=(-1.25-a[2])/(b[2]-a[2])
+                if 0<underground<1:hits.append(SimpleNamespace(location=Location(*(a+underground*(b-a))),label=1))
+            return hits
     x=np.arange(0.,40.,.5);left=np.c_[x,np.full(len(x),-1.75),np.zeros(len(x))];right=left.copy();right[:,1]=1.75
     ref=LaneReference(left,right)
     k=np.array([[300.,0,320.],[0,300.,240.],[0,0,1.]])
@@ -108,6 +119,8 @@ def test_depth_fixture_uses_independent_geometry_at_exact_pixels(monkeypatch):
     rows=np.arange(480)[:,None]
     depth=np.broadcast_to(np.divide(390.,rows+.5-240,out=np.full((480,1),1000.),where=rows>240),(480,640))
     images={name+suffix:value for name in ('narrow','wide') for suffix,value in (('_rgb_camera_from_world',camera),('_depth',depth))}
+    if invisible_volume:
+        images.update({cam+'_semantic_segmentation':np.ones((480,640),np.uint8) for cam in ('narrow','wide')})
     report=collision_depth_fixture(images,SimpleNamespace(profiles=[profile,profile]),ref,World(),OPTICAL_FROM_CARLA)
     assert all(v['qualified'] and v['depth_mode']=='forward' for v in report.values())
     assert all(v['maximum_residual_m']['forward']<1e-6 for v in report.values())
@@ -120,3 +133,9 @@ def test_depth_fixture_uses_independent_geometry_at_exact_pixels(monkeypatch):
     grid_images={**images,**{cam+'_semantic_segmentation':np.ones((480,640),np.uint8) for cam in ('narrow','wide')}}
     report=collision_depth_fixture(grid_images,SimpleNamespace(profiles=[profile,profile]),behind,World(),OPTICAL_FROM_CARLA)
     assert all(v['qualified'] for v in report.values())
+    assert all(v['diagnostics']['local_road_plane_outside_fixture_range']>0 for v in report.values())
+    if invisible_volume:
+        assert all(v['diagnostics']['unlabelled_collision_hits_ignored']>0 for v in report.values())
+        no_semantics={k:v for k,v in grid_images.items() if 'semantic_segmentation' not in k}
+        report=collision_depth_fixture(no_semantics,SimpleNamespace(profiles=[profile,profile]),ref,World(),OPTICAL_FROM_CARLA)
+        assert not any(v['qualified'] for v in report.values())

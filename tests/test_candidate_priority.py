@@ -21,6 +21,7 @@ def test_unpainted_junctions_are_deprioritized_and_curb_routes_remain_eligible()
     assert boundary_risk(task('junction',missing=[('left',40,65),('right',40,65)]))['tier']==2
     # Untraversed preview beyond the terminal stop must not penalize a route.
     assert boundary_risk(task('tail',missing=[('left',82,100),('right',82,100)]))['tier']==0
+    assert boundary_risk(task('warmup',missing=[('right',0,12)]))['tier']==1
     assert boundary_risk({'route':{}})['tier']==1
 
 

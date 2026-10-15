@@ -7,7 +7,7 @@ from __future__ import annotations
 
 PAINT = {'solid', 'broken', 'solidsolid', 'solidbroken', 'brokensolid',
          'brokenbroken', 'bottsdots'}
-RANKING_VERSION = 1
+RANKING_VERSION = 2
 
 
 def boundary_risk(task):
@@ -18,9 +18,11 @@ def boundary_risk(task):
     if len(arc) < 2 or len(markings) != len(arc) or not phases:
         return dict(tier=1, maximum_unpainted_gap_m=0., both_unpainted_m=0.,
                     painted_fraction=0., scope='unknown_boundary_metadata')
-    # Cover the event's full input history and the actual driven suffix. The
-    # rest of the reserved route may contain junctions the car never reaches.
-    start = max(0., phases['approach'][0] - 5.*task.get('nominal_speed_mps', 3.5))
+    # Include the entire physical warmup, not just the labelled event. An
+    # unmarked tight junction before an otherwise painted event can prevent
+    # initialization or use up its route budget. Untraversed preview after the
+    # terminal stop must not penalize a route.
+    start = arc[0]
     stop = task.get('terminal_stop_route_m', phases['recovery'][1])
     gaps = [0., 0.]
     run_start = [None, None]
