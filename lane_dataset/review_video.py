@@ -15,6 +15,32 @@ from .preprocessing import DEPENDENCY_ROOT, MODEL_SIZE, reference_module
 from .postprocess import shard_postprocess_lock
 
 
+def review_annotations(manifest, telemetry, geometry):
+    """Expose physical setup and measured lateral position in review-only text."""
+    from .geometry import LaneReference
+    reference=LaneReference(geometry['left_xyz'],geometry['right_xyz'],geometry['arc_m'])
+    event=manifest.get('recovery_event') or {}
+    onset=event.get('onset_index')
+    held=event.get('held_offset_m')
+    positions=np.asarray(telemetry['position_world'])
+    progress=np.asarray(telemetry['route_s'])
+    if len(positions)!=len(progress):raise ValueError('review telemetry count mismatch')
+    annotations=[]
+    for index,(position,route_s) in enumerate(zip(positions,progress)):
+        _,offset=reference.project(position[:2],hint_s=float(route_s))
+        side='right' if offset>=0 else 'left'
+        position_text=f'CENTER OFFSET {offset:+.3f} m ({side})'
+        if isinstance(onset,int) and held is not None:
+            if index<onset:
+                phase_text=f'RECOVERY SETUP: hold {float(held):+.2f} m | no labels'
+            else:
+                phase_text='CENTER RECOVERY: target 0.000 m'
+        else:
+            phase_text='CENTER TRACKING: target 0.000 m'
+        annotations.append((position_text,phase_text))
+    return annotations
+
+
 def export_clip(shard):
     with shard_postprocess_lock(shard):
         return _export_clip_unlocked(shard)
@@ -25,6 +51,10 @@ def _export_clip_unlocked(shard):
     if manifest.get("status")=="accepted":
         raise ValueError("accepted shards are immutable; export review clips before publication")
     frames=[json.loads(line) for line in (shard/manifest["frames_file"]).read_text().splitlines()]
+    with np.load(shard/'telemetry.npz',allow_pickle=False) as archive:
+        telemetry={key:archive[key] for key in ('position_world','route_s')}
+    annotations=review_annotations(manifest,telemetry,json.loads((shard/'geometry.json').read_text()))
+    if len(annotations)!=len(frames):raise ValueError('review frame/telemetry count mismatch')
     try:
         import imageio_ffmpeg
         executable=imageio_ffmpeg.get_ffmpeg_exe()
@@ -51,6 +81,8 @@ def _export_clip_unlocked(shard):
             canvas=Image.new("RGB",(1024,296),(12,15,19));draw=ImageDraw.Draw(canvas)
             draw.text((10,5),f"STOCK MED | frame {frame['frame_id']} | {frame['timestamp']-frames[0]['timestamp']:.2f}s",fill="white")
             draw.text((524,5),"STOCK SBIG | development evidence, acceptance in manifest",fill="white")
+            draw.text((10,22),annotations[index][0],fill='white')
+            draw.text((524,22),annotations[index][1],fill=(255,210,100))
             for camera,reader in enumerate(readers):
                 canvas.paste(Image.fromarray(ns["packed_to_rgb_bt601_limited"](reader[index])),(camera*512,40))
             process.stdin.write(np.asarray(canvas).tobytes())

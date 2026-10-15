@@ -49,12 +49,45 @@ These checks penalize line hugging and chords that cut across a curve even when
 the output endpoints lie on the centerline. They are sampled losses, not a
 continuous geometric containment certificate or a guarantee of perfect driving.
 
+The current objective is `observed_centerline_origin_recovery_v2`. Its path starts
+at the actual ego origin and forward heading. A centered, aligned vehicle retains
+the exact observed centerline target. For an offset or misaligned vehicle, a fixed
+quintic correction joins the observed centerline with zero remaining position,
+slope and second-derivative correction. Beyond that join the target is exactly the
+observed centerline, including curves. The recovery is constructed independently
+of student outputs and recorded steering; shortening a prediction cannot shorten
+the recovery or change its supervision mask.
+
+`LossConfig` exposes the recovery limits explicitly: 2-20 m recovery length,
+maximum added spatial second derivative 0.06 1/m, maximum added spatial third
+derivative 0.10 1/m^2, and a minimum forward derivative of 0.5. Polynomial extrema
+are checked analytically; the target's footprint is checked at no more than 25 cm
+spacing against the same 15 cm lane margin. These are geometric correction bounds,
+not speed-dependent acceleration/jerk certification. The shortest qualifying
+length on the 25 cm search grid is chosen. A missing observation interval or lack
+of a bounded, contained recovery masks the label explicitly instead of creating an
+instantaneous sideways target. Position/heading tolerances for an already aligned
+origin are 1 mm and 0.001 rad. A mandatory origin penalty also prevents an entire
+predicted path translated sideways from scoring as perfect.
+
 Defaults are Smooth L1 lateral/clearance scales of 10 cm, a tangent displacement
 scale of 1 m, weights of 1 for lateral/progress/clearance, and .25 for heading.
 Progress and lateral penalties cannot be disabled through `LossConfig`.
 The loss directly supervises XY and yaw. It does not directly supervise plan
 velocity, acceleration, angular rates, uncertainty or unrelated output heads.
 Their behavior must be checked when evaluating actual fine-tuned CD210 weights.
+
+Selection uses `lateral_geometry_origin_recovery_v2`, including the origin term.
+Old validation scores are not comparable to this version. Existing checkpoints
+and exports remain unchanged; the trainer refuses to resume or automatically
+migrate a run whose saved objective version differs. No old checkpoint was trained
+with this correction merely because the implementation has been updated.
+
+An external `reports/review-holds.json` registry can hold an accepted recording
+without changing its files. The loader checks holds again even for already loaded
+frames. Training refuses a checkpoint whose committed sampler counts show use of
+a held recording, before making another update or promoting a candidate. A hold
+can be released explicitly after review; checkpoint artifacts are preserved.
 
 ## Observable geometry and immutable recordings
 

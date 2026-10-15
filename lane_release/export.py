@@ -147,6 +147,8 @@ def select_checkpoint(run,output,releases):
     scored=[]
     for candidate in candidates:
         model,package=load_checkpoint(candidate['snapshot'])
+        from lane_dataset.review_hold import assert_checkpoint_not_held
+        assert_checkpoint_not_held(corpus,package['training_state'])
         if package['step']!=candidate['step']: raise ValueError('checkpoint step/pointer mismatch')
         if package['training_state']['config']!=training_config:raise ValueError('saved candidates use different training configurations')
         measurements=[]

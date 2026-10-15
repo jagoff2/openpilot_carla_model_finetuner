@@ -48,6 +48,8 @@ def prepare_candidate(run, releases, step):
             model,package=export.load_checkpoint(snapshot)
             if package['step']!=step:raise ValueError('checkpoint step does not match requested step')
             corpus=Path(package['training_state']['config']['corpus']).resolve()
+            from lane_dataset.review_hold import assert_checkpoint_not_held
+            assert_checkpoint_not_held(corpus,package['training_state'])
             validation=[]
             for row in record['rows']:
                 path=(corpus/row['episode']).resolve()

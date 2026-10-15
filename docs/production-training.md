@@ -1,5 +1,7 @@
 # CD210 production fine-tuning during collection
 
+**2026-10-15 quality repair:** capture policy 8, reversible data review holds, and an ego-origin-anchored centerline objective are installed. Existing trained runs cannot silently resume across this objective change. See [the investigation and restart constraints](data-quality-investigation-20261015.md).
+
 The production trainer is `python -m lane_training.production`. It follows
 `<dataset_root>\training-index.partial.json` while the two CARLA
 collectors run concurrently, then follows the final index when published.

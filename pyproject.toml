@@ -19,11 +19,20 @@ lane-centerline-audit = "lane_training.audit:main"
 lane-cd210-fetch = "lane_training.fetch_cd210:main"
 lane-cd210-train = "lane_training.production:main"
 lane-cd210-export = "lane_release.export:main"
+lane-unmarked-plan = "lane_behavior.scenarios:main"
+lane-unmarked-probe = "lane_behavior.qualification_probe:main"
+lane-unmarked-capture = "lane_behavior.capture:main"
+lane-unmarked-reprocess = "lane_behavior.reprocess:main"
+lane-unmarked-admit = "lane_behavior.admission:main"
+lane-unmarked-collect = "lane_behavior.collect:main"
+lane-unmarked-train = "lane_behavior.mixed_runner:main"
+lane-unmarked-follow = "lane_behavior.mixed_follow:main"
+lane-unmarked-export = "lane_behavior.export:main"
 lane-pipeline-prepare = "pipeline.bootstrap:main"
 lane-collect = "reports.automatic_corpus:main"
 
 [tool.setuptools.packages.find]
-include = ["lane_dataset*", "lane_training*", "lane_release*", "lane_reference*", "reports", "pipeline*"]
+include = ["lane_dataset*", "lane_training*", "lane_release*", "lane_behavior*", "lane_reference*", "reports", "pipeline*"]
 
 [tool.setuptools.package-data]
 pipeline = ["assets/*.json"]

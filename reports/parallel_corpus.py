@@ -22,6 +22,8 @@ from reports import automatic_corpus as corpus
 from reports.collection_failures import (retry_after_policy_change, remember_failure,
     cached_failure, archive_previous_result, restore_failure_memory)
 from lane_dataset.capture_policy import CAPTURE_POLICY_VERSION
+from lane_behavior.world_access import (PortReservedError, collection_dispatch,
+    reservation_status, protocol_identity)
 
 
 def discover_workers(root):
@@ -137,6 +139,14 @@ class Worker:
         self.reader.close()
 
 
+def dispatch_worker(root, job_path, port, *, reprocess=False):
+    # Offline completion/admission of an existing capture does not own CARLA.
+    if reprocess:
+        return Worker(root, job_path, port, reprocess=True)
+    with collection_dispatch(root, port):
+        return Worker(root, job_path, port)
+
+
 def busy_group(task, workers):
     # Different route hashes can still cover the same roads (for example,
     # adjacent lanes). Reserve the physical envelope before either admission.
@@ -173,9 +183,12 @@ def finish(root, state, worker, test_report):
     if result['status'] == 'completed_capture_needs_postprocessing':
         return Worker(root, worker.job_path, worker.port, reprocess=True)
     if corpus.needs_recovery_policy_retry(result) and not retry_marker.exists():
-        shutil.copy2(worker.result_path, retry_marker)
-        worker.result_path.unlink()
-        return Worker(root, worker.job_path, worker.port)
+        # The lease check and spawn are atomic against a new qualification
+        # reservation. Do not remove the old result until dispatch is allowed.
+        with collection_dispatch(root, worker.port):
+            shutil.copy2(worker.result_path, retry_marker)
+            worker.result_path.unlink()
+            return Worker(root, worker.job_path, worker.port)
     try:
         if result['status'] == 'measured_candidate_passed':
             effective = worker.job_path.with_suffix('.capture-task.json')
@@ -224,6 +237,7 @@ def run(root, plan_path, test_report):
         state = corpus.read(state_path) if state_path.exists() else dict(completed={}, plan=str(plan_path))
         restore_failure_memory(output, state)
         state['status'] = 'running'
+        state['worker_reservation_protocol'] = protocol_identity()
         workers = {}
         # Recover every live child before selecting any new job, including jobs
         # whose prior parent's last status write had not completed.
@@ -236,9 +250,20 @@ def run(root, plan_path, test_report):
         exhausted = False
         save(root, state, workers)
         while True:
+            reservations = {port:reservation_status(root, port) for port in ports}
+            previous_reservations = state.get('worker_reservations', {})
+            state['worker_reservations'] = {}
+            for port, reservation in reservations.items():
+                detail = dict(blocked=reservation.blocked, status=reservation.status, reason=reservation.reason)
+                if reservation.reservation is not None:
+                    detail.update(owner_pid=reservation.reservation.owner_pid,
+                        expires_at=reservation.reservation.expires_at)
+                state['worker_reservations'][str(port)] = detail
+                if reservation.blocked and previous_reservations.get(str(port)) != detail:
+                    corpus.log('collection_port_reserved', port=port, **detail)
             # Refill both slots before doing slow independent publication work.
             for port in ports:
-                if port in workers:
+                if port in workers or reservations[port].blocked:
                     continue
                 for _ in range(100):
                     ready = next((i for i, (t, _) in enumerate(pending) if not busy_group(t, workers)), None)
@@ -293,21 +318,27 @@ def run(root, plan_path, test_report):
                             result = corpus.read(result_path)
                             # Recover unfinished admission without recapturing.
                             if result['status'] in ('completed_capture_needs_postprocessing', 'measured_candidate_passed'):
-                                workers[port] = Worker(root, job_path, port, reprocess=True)
+                                workers[port] = dispatch_worker(root, job_path, port, reprocess=True)
                             elif corpus.needs_recovery_policy_retry(result):
                                 marker = result_path.with_name(result_path.stem+'.before-recovery-policy.json')
                                 if marker.exists():
                                     state['completed'][job_id] = result
                                     continue
-                                shutil.copy2(result_path, marker)
-                                result_path.unlink()
-                                workers[port] = Worker(root, job_path, port)
+                                with collection_dispatch(root, port):
+                                    shutil.copy2(result_path, marker)
+                                    result_path.unlink()
+                                    workers[port] = Worker(root, job_path, port)
                             else:
                                 state['completed'][job_id] = result
                                 continue
                         else:
-                            workers[port] = Worker(root, job_path, port)
+                            workers[port] = dispatch_worker(root, job_path, port)
                         save(root, state, workers)
+                        break
+                    except PortReservedError:
+                        # A lease may have arrived after candidate selection.
+                        # Keep the job pending rather than recording a failure.
+                        pending.insert(0, (original, prepared))
                         break
                     except Exception as error:
                         state['completed'][job_id] = dict(status='rejected', errors=[str(error)], traceback=traceback.format_exc())
@@ -317,7 +348,12 @@ def run(root, plan_path, test_report):
                     continue
                 worker.stage = 'independent_admission_and_publication'
                 save(root, state, workers)
-                replacement = finish(root, state, worker, test_report)
+                try:
+                    replacement = finish(root, state, worker, test_report)
+                except PortReservedError:
+                    worker.stage = 'waiting_for_reserved_port_before_recapture'
+                    save(root, state, workers)
+                    continue
                 worker.close()
                 if replacement:
                     workers[port] = replacement

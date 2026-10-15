@@ -230,11 +230,8 @@ def _capture_owned(root,port,worker,ticks,benchmark,task):
             settings=apply_checked_settings(world,settings)
         else:
             world,settings=configure_world(client,(task or {}).get("town","Town04"),render=True)
-        weather=carla.WeatherParameters.ClearNoon
-        if (task or {}).get("appearance",0)%2:
-            weather=carla.WeatherParameters.WetCloudySunset
-            weather.precipitation=25.;weather.wetness=70.
-        world.set_weather(weather)
+        from .render_quality import apply_production_weather
+        manifest['render_profile']=apply_production_weather(world,carla,(task or {}).get('appearance',0))
         waypoint=world.get_map().get_waypoint_xodr(**task["start"]) if task and "start" in task else world.get_map().get_waypoint_xodr(38,4,200.)
         if waypoint is None: raise RuntimeError("episode start waypoint unavailable")
         if task and "route" in task:

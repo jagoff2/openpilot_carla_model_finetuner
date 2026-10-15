@@ -11,7 +11,7 @@ from uuid import uuid4
 
 from lane_dataset.config import sha256_file, write_json
 
-SELECTION_METRIC = 'lateral_geometry_v1'
+SELECTION_METRIC = 'lateral_geometry_origin_recovery_v2'
 
 
 def lateral_score(geometry):
@@ -20,7 +20,8 @@ def lateral_score(geometry):
     cfg = LossConfig()
     return float(cfg.lateral_weight * geometry['lateral_loss']
         + cfg.heading_weight * geometry['heading_loss']
-        + cfg.clearance_weight * geometry['clearance_loss'])
+        + cfg.clearance_weight * geometry['clearance_loss']
+        + cfg.origin_weight * geometry.get('origin_loss', 0.))
 
 
 def selection_report(optimization_loss, baseline_optimization_loss, geometry, baseline_geometry):

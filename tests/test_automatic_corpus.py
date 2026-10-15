@@ -5,6 +5,24 @@ from lane_dataset.config import write_json
 from reports.automatic_corpus import execute_job
 
 
+def test_review_holds_remove_training_index_entries_but_preserve_artifacts(tmp_path,monkeypatch):
+    from reports import automatic_corpus as runner
+    summaries=[]
+    for episode in ('clean','held'):
+        path=tmp_path/'accepted'/episode/'manifest.json'
+        path.parent.mkdir(parents=True);path.write_text('{}')
+        summaries.append(dict(episode_id=episode,split='train',family='straight_recovery',history_crop_loss_count=0))
+    write_json(tmp_path/'reports/review-holds.json',dict(schema_version=1,
+        episodes={'held':dict(status='held',reasons=['operator review'])}))
+    monkeypatch.setattr(runner,'accepted_manifests',lambda root:summaries)
+    result=runner.snapshot(tmp_path,dict(completed={},status='paused'))
+    assert result['accepted_total']==20
+    assert result['accepted_artifact_labels']==40 and result['review_held_labels']==20
+    index=json.loads((tmp_path/'training-index.partial.json').read_text())
+    assert len(index['episodes'])==1 and 'clean' in index['episodes'][0]
+    assert (tmp_path/'accepted/held/manifest.json').read_text()=='{}'
+
+
 def test_failed_capture_is_checkpointed_without_abandoning_parent_queue(tmp_path,monkeypatch):
     from lane_dataset import capture
     monkeypatch.setattr(capture,'capture_development',lambda *a,**k:dict(path=str(tmp_path/'quarantine'),manifest={'error':{'message':'lost evidence'}}))

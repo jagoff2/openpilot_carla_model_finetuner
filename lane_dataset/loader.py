@@ -9,6 +9,7 @@ import numpy as np
 
 from .adapter import lateral_action_target
 from .preprocessing import PACKED_FRAME_SHAPE, RebelliousHopeState, reference_module
+from .review_hold import assert_episode_not_held
 
 FrameArchiveReader = reference_module("frame_archive_v2").FrameArchiveReader
 FRAME_DT = 0.05
@@ -57,6 +58,7 @@ class SequenceEpisode:
         if self.path.is_dir():
             self.path = self.path / "manifest.json"
         self.root = self.path.parent
+        assert_episode_not_held(self.path)
         self.manifest = json.loads(self.path.read_text(encoding="utf-8"))
         if self.manifest.get("schema_version") != 1 or self.manifest.get("status") != self._required_status:
             raise ValueError(f"this loader requires a {self._required_status} schema-1 shard")
@@ -92,6 +94,7 @@ class SequenceEpisode:
         return path
 
     def _verify_file_inventory(self, verify_hashes):
+        assert_episode_not_held(self.path)
         inventory = self.manifest.get("files")
         if not isinstance(inventory, dict) or not inventory:
             raise ValueError("accepted training shards require manifest.files hash bindings")
@@ -168,6 +171,7 @@ class SequenceEpisode:
         return len(self.frames)
 
     def frame(self, index):
+        assert_episode_not_held(self.path)
         return np.stack([archive[index] for archive in self.archives])
 
     def iter_frames(self):
@@ -179,6 +183,7 @@ class SequenceEpisode:
 
     def selected_targets(self):
         """Physical targets and recorded action horizons; never privileged metadata."""
+        assert_episode_not_held(self.path)
         keys = ("label_indices", "plan_targets", "plan_mask", "lateral_targets", "lateral_mask",
                 "longitudinal_targets", "longitudinal_mask")
         selected = {key: value for key, value in self.labels.items() if key in keys}

@@ -737,6 +737,8 @@ def _build_labels_unlocked(shard_path, *, dataset_root=None):
             reasons.append("expert_command_not_accepted")
         if not np.isfinite(telemetry["command_curvature"][index]):
             reasons.append("expert_command_nonfinite")
+        if manifest.get("recovery_onset_s", 0.) > times[index]-times[0]+1e-6:
+            reasons.append("label_precedes_declared_recovery_release")
         if depth_errors or evidence_errors or any(reason.startswith(("stock_preprocessing", "preprocessing_source")) for reason in errors):
             reasons.append("rendered_evidence_invalid")
         if manifest.get("family") == "intersection_turn":
@@ -1011,6 +1013,43 @@ def validate_capture_envelope(shard, manifest, telemetry):
     return dict(passed=not errors,errors=sorted(set(errors)),bindings=bindings,measurements=measured)
 
 
+def validate_recovery_event(manifest, telemetry, reference):
+    """Bind a held-offset recovery exception to its signed measured release."""
+    errors, measured = [], {}
+    onset_s = manifest.get("recovery_onset_s", 0.)
+    event = manifest.get("recovery_event", {})
+    if not onset_s and not event:
+        return dict(passed=True, errors=[], measurements={})
+    try:
+        if (manifest.get("recovery") is not True or not isinstance(event, dict) or
+                not isinstance(onset_s, (int, float)) or not np.isfinite(onset_s) or onset_s <= 0):
+            raise ValueError("held recovery requires a declared positive release time")
+        onset = event.get("onset_index")
+        if type(onset) is not int or not 0 < onset < len(telemetry["timestamp"]):
+            raise ValueError("measured recovery onset index is missing or outside recording")
+        elapsed = float(telemetry["timestamp"][onset]-telemetry["timestamp"][0])
+        offset = float(reference.project(telemetry["position_world"][onset, :2])[1])
+        held = event.get("held_offset_m")
+        limits = QualityConfig()
+        if (not isinstance(held, (int, float)) or not np.isfinite(held) or
+                not .15 <= abs(held) <= limits.maximum_held_recovery_offset_m):
+            raise ValueError("held recovery offset must be finite, signed, and between 15 and 30 cm")
+        if (not np.isclose(elapsed, onset_s, rtol=0, atol=1e-6) or
+                not np.isclose(event.get("onset_s", np.nan), elapsed, rtol=0, atol=1e-6)):
+            errors.append("measured_recovery_onset_timing_mismatch")
+        if not np.isclose(event.get("physical_offset_at_release_m", np.nan), offset, rtol=0, atol=1e-6):
+            errors.append("measured_recovery_release_offset_mismatch")
+        if abs(offset-held) > limits.recovery_hold_tolerance_m:
+            errors.append("measured_recovery_offset_disagrees_with_signed_hold")
+        if any(record.get("label_index", -1) < onset for record in manifest.get("label_records", [])):
+            errors.append("label_precedes_declared_recovery_release")
+        measured = dict(onset_index=onset, onset_s=elapsed, signed_release_offset_m=offset,
+                        declared_held_offset_m=held, hold_tolerance_m=limits.recovery_hold_tolerance_m)
+    except (KeyError, TypeError, ValueError, IndexError) as error:
+        errors.append("recovery_event_evidence_invalid:"+str(error))
+    return dict(passed=not errors, errors=errors, measurements=measured)
+
+
 def qualify_candidate(shard_path, *, dataset_root=None):
     """Rebuild labels, recompute physical gates, and check review provenance."""
     with shard_postprocess_lock(shard_path):
@@ -1032,10 +1071,16 @@ def _qualify_candidate_unlocked(shard_path, *, dataset_root=None):
         if (captured_sources.get(str(source))!=sha256_file(source) or not captured.is_file()
             or sha256_file(captured)!=sha256_file(source)):
             errors.append("capture_source_not_qualified:"+source.name)
-    physical, envelope = None, None
+    physical, envelope, visual = None, None, None
     try:
         with np.load(shard / "telemetry.npz", allow_pickle=False) as archive:
             t = {key: archive[key] for key in archive.files}
+        if manifest.get('capture_policy_version',0)>=8:
+            from .render_quality import validate_visual_capture
+            visual=validate_visual_capture(shard,manifest,t)
+            errors.extend('visual:'+reason for reason in visual['errors'])
+        elif manifest.get('appearance',0)%2 and manifest.get('automatic_review_file'):
+            errors.append('visual:legacy_wet_rendering_requires_explicit_review')
         envelope = validate_capture_envelope(shard,manifest,t)
         errors += envelope["errors"]
         qualification["bindings"].update(envelope["bindings"])
@@ -1066,13 +1111,9 @@ def _qualify_candidate_unlocked(shard_path, *, dataset_root=None):
             collisions=len(manifest["collision_events"]) if "collision_events" in manifest else None,
             rendered_boundary_agreement=None, completed_maneuver=t["route_s"][-1]-t["route_s"][0] >= target,
             intended_progress_m=target, recovery=bool(manifest.get("recovery", False)),recovery_onset_s=manifest.get('recovery_onset_s',0.)).to_dict()
-        if manifest.get('recovery_onset_s',0.):
-            event=manifest.get('recovery_event',{});onset=event.get('onset_index')
-            if type(onset) is not int or not 0<=onset<len(t['timestamp']):
-                errors.append('measured_recovery_onset_missing')
-            elif (abs(reference.project(t['position_world'][onset,:2])[1])<.15
-                  or not np.isclose(t['timestamp'][onset]-t['timestamp'][0],manifest['recovery_onset_s'],atol=1e-6)):
-                errors.append('measured_recovery_initial_offset_or_timing_invalid')
+        recovery_event = validate_recovery_event(manifest, t, reference)
+        errors.extend(recovery_event['errors'])
+        physical['metrics']['declared_recovery_event'] = recovery_event
         # The pixel ledger proves marking visibility. Physical/rendered boundary
         # agreement is a separate reviewer-bound measurement, never supported>=4.
         review_path = (_member(root,manifest['automatic_review_file']) if manifest.get('automatic_review_file')
@@ -1111,7 +1152,7 @@ def _qualify_candidate_unlocked(shard_path, *, dataset_root=None):
     except (KeyError, ValueError, TypeError, OSError) as error:
         errors.append("physical_or_review_evidence_invalid:" + str(error))
     report = dict(schema_version=1, passed=not errors, errors=sorted(set(errors)), physical=physical,
-        capture_envelope=envelope,
+        capture_envelope=envelope,visual=visual,
         label_count=built["label_count"], lateral_label_count=built["lateral_label_count"],
         bindings=qualification["bindings"], artifact_hashes={key: value for key, value in manifest["files"].items()
                                                           if key != "admission-report.json"},

@@ -15,18 +15,20 @@ import time
 import traceback
 
 import psutil
-from lane_dataset.config import DEFAULT_ROOT
 import torch
 
 from lane_dataset.loader import SequenceEpisode
+from lane_dataset.review_hold import (ReviewHoldError, active_holds,
+    assert_episode_not_held, assert_checkpoint_not_held, episode_name)
 from .adapters import model_centerline_loss
 from .cd210 import ROLLOUT_PLAN, backward, student_rollout
 from .cd210_model import create_model, export_onnx, load_checkpoint, save_checkpoint
 from .smoke import parameter_digest
 from .targets import episode_corridors
+from .centerline import OBJECTIVE_VERSION
 from .checkpoint_store import (checkpoint_path, immutable_json, preserve,
     protect_validation, protected_cohorts, SELECTION_METRIC, selection_report, lateral_score)
-from lane_dataset.config import write_json
+from lane_dataset.config import DEFAULT_ROOT, write_json
 from uuid import uuid4
 
 
@@ -86,6 +88,7 @@ class TrainingConfig:
 def discover(corpus, known=None):
     """Read only the published index; enforce immutable manifests and split isolation."""
     corpus = Path(corpus).resolve()
+    holds = active_holds(corpus)  # Also fail closed before an index exists.
     final = corpus/'training-index.json'
     index_path = final if final.exists() else corpus/'training-index.partial.json'
     if not index_path.exists(): return [],False
@@ -96,6 +99,7 @@ def discover(corpus, known=None):
         path = (corpus/relative).resolve()
         if corpus/'accepted' not in path.parents or path in seen_paths:
             raise ValueError('training index must contain unique accepted manifest paths inside the corpus')
+        assert_episode_not_held(path, corpus=corpus)
         seen_paths.add(path)
         raw = path.read_bytes(); manifest = json.loads(raw)
         split = manifest.get('split')
@@ -113,7 +117,8 @@ def discover(corpus, known=None):
         if identity in known and any(known[identity][k] != row[k] for k in ('sha256','split','group')):
             raise ValueError(f'previously observed accepted manifest changed: {identity}')
         rows.append(row)
-    if set(known)-{r['id'] for r in rows}:
+    missing = set(known)-{r['id'] for r in rows}
+    if any(episode_name(identity).casefold() not in holds for identity in missing):
         raise ValueError('published accepted index lost previously observed episodes')
     return rows,bool(index.get('complete'))
 
@@ -169,6 +174,8 @@ def migrate_preservation(directory, cfg, *, lateral_selection=False):
     current = {p.name:digest(p) for p in Path(__file__).parent.glob('*.py')}
     previous = state['source_hashes']
     changed = {name for name in previous.keys() | current.keys() if previous.get(name) != current.get(name)}
+    if state.get('objective_version') != OBJECTIVE_VERSION:
+        raise ValueError('training objective changed; automatic migration of the old run is forbidden')
     if not changed:
         return None
     allowed = {'production.py', 'checkpoint_store.py'} if lateral_selection else {
@@ -233,13 +240,17 @@ class Trainer:
         self.started = time.time()
         if (self.directory/'resume.json').exists():
             self.model,self.optimizer,self.state = restore(self.directory,cfg)
+            assert_checkpoint_not_held(cfg.corpus, self.state)
         else:
             self.model = create_model().eval()
             self.optimizer = make_optimizer(self.model,cfg)
             self.state = dict(config=asdict(cfg),step=0,counts={},known={},failed={},last_validation=None,
+                objective_version=OBJECTIVE_VERSION,
                 selection_metric=SELECTION_METRIC,
                 initial_parameter_sha256=parameter_digest(self.model),source_hashes={p.name:digest(p) for p in Path(__file__).parent.glob('*.py')})
             commit(self.directory,self.model,self.optimizer,self.state)
+        if self.state.get('objective_version') != OBJECTIVE_VERSION:
+            raise ValueError('training objective changed; preserve this run and explicitly qualify a new run before resuming')
         current_sources = {p.name:digest(p) for p in Path(__file__).parent.glob('*.py')}
         if self.state['source_hashes'] != current_sources:
             raise ValueError('training implementation changed since checkpoint; preserve run identity before migration')
@@ -264,6 +275,7 @@ class Trainer:
             collection = {k:collection[k] for k in ('accepted_total','pid','active_workers','updated')}
         except (OSError,ValueError,KeyError): collection = None
         atomic_json(self.directory/'status.json',dict(updated=time.time(),pid=os.getpid(),phase=phase,
+            objective_version=OBJECTIVE_VERSION,
             selection_metric=SELECTION_METRIC,
             step=self.state['step'],optimizer_steps=self.state['step'],device='cpu',cpu_threads=self.cfg.cpu_threads,
             rss_bytes=process.memory_info().rss,cpu_seconds=sum(process.cpu_times()[:2]),
@@ -277,6 +289,8 @@ class Trainer:
 
     def train_one(self,row):
         if row['split']!='train': raise ValueError('only the training split can update weights')
+        assert_checkpoint_not_held(self.cfg.corpus, self.state)
+        assert_episode_not_held(row['path'], corpus=self.cfg.corpus)
         self.active = row['id'];self.status('training');start=time.perf_counter()
         before = parameter_digest(self.model)
         with SequenceEpisode(row['path']) as episode:
@@ -292,6 +306,9 @@ class Trainer:
             gradients[role] = sum(int(g.count_nonzero()) for g in gs)
             if not gradients[role]: raise ValueError(f'no {role} gradient reached the actual checkpoint')
         norm = float(torch.nn.utils.clip_grad_norm_(self.model.parameters(),self.cfg.gradient_clip,error_if_nonfinite=True))
+        # A review hold may arrive while recurrence/backward is running.
+        assert_checkpoint_not_held(self.cfg.corpus, self.state)
+        assert_episode_not_held(row['path'], corpus=self.cfg.corpus)
         self.optimizer.step()
         if not all(bool(torch.isfinite(p).all()) for p in self.model.parameters()): raise ValueError('nonfinite updated weights')
         after = parameter_digest(self.model)
@@ -324,6 +341,7 @@ class Trainer:
             results.append(dict(episode=row['id'],manifest_sha256=row['sha256'],**result))
         labels = sum(r['labels'] for r in results)
         result = dict(step=self.state['step'],cohort=cohort,episodes=len(results),labels=labels,
+            objective_version=OBJECTIVE_VERSION,
             selection_metric=SELECTION_METRIC,
             loss=sum(r['loss']*r['labels'] for r in results)/labels,
             baseline_loss=sum(r['baseline_loss']*r['labels'] for r in results)/labels,
@@ -335,6 +353,7 @@ class Trainer:
         return result
 
     def validate(self,rows):
+        assert_checkpoint_not_held(self.cfg.corpus, self.state)
         selected = [r for r in rows if r['split']=='validation']
         if not selected: return
         result = self.score(self.model, selected)
@@ -357,6 +376,9 @@ class Trainer:
                         raise ValueError('legacy best validation cohort changed')
                 incumbent['protected_cohorts'] = best.get('protected_cohorts') or protected_cohorts(prior)
                 del model
+        assert_checkpoint_not_held(self.cfg.corpus, self.state)
+        for row in selected:
+            assert_episode_not_held(row['path'], corpus=self.cfg.corpus)
         immutable_json(self.directory/'validation'/f'step-{self.state["step"]:06d}-{uuid4().hex}.json',result)
         self.state['last_validation'] = {k:v for k,v in result.items() if k!='rows'}
         pointer = commit(self.directory,self.model,self.optimizer,self.state)
@@ -370,6 +392,7 @@ class Trainer:
                 self.status('stopped_at_checkpoint'); return
             if max_steps is not None and self.state['step']>=max_steps:
                 self.status('step_limit_reached'); return
+            assert_checkpoint_not_held(self.cfg.corpus, self.state)
             try:
                 rows,complete = discover(self.cfg.corpus,self.state['known'])
             except (OSError,json.JSONDecodeError) as error:
@@ -396,6 +419,10 @@ class Trainer:
                 time.sleep(self.cfg.poll_seconds);continue
             try:
                 self.train_one(row)
+            except ReviewHoldError as error:
+                self.log('review_hold', episode=row['id'], error=str(error))
+                self.status('blocked_review_hold', error=str(error))
+                raise
             except Exception as error:
                 self.log('episode_update_failed',episode=row['id'],error=str(error),traceback=traceback.format_exc())
                 self.model,self.optimizer,self.state = restore(self.directory,self.cfg)

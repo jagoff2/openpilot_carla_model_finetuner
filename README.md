@@ -1,5 +1,19 @@
 # openpilot CARLA model fine-tuner
 
+The [unmarked-road behavior extension](docs/unmarked-road-behavior.md) adds right-side
+targets, grounded obstacle avoidance and recovery, a separate native queue and a
+mixed CD210 follower. Parked vehicles require verified four-wheel road support.
+Automatic admission, queue continuation and the training handoff retain only
+independently qualified examples.
+
+The step-71 CD210 candidate was exported and installed on the c3x with **FP32
+vision and FP32 policy**. Its 120-frame device check measured 38.7 ms p95 and
+39.1 ms maximum model-pair latency. The Experimental selector keeps step 24 and
+step 71 separately; installation preserves the active selection. See
+[export and installation](docs/c3x-export.md).
+
+**2026-10-15 quality repair:** capture policy 8, reversible data review holds, and an ego-origin-anchored centerline objective are installed. Existing trained runs cannot silently resume across this objective change. See [the investigation and restart constraints](docs/data-quality-investigation-20261015.md).
+
 Collect checked lane-centering examples in CARLA, fine-tune **CD210/C210M** while
 new examples arrive, and export the best saved model to ONNX and native comma 3X
 Tinygrad PKLs. The direct geometric objective penalizes off-center paths,
@@ -17,6 +31,50 @@ The default runs **both CARLA GPUs concurrently** and a separate CPU trainer
 using two threads. There is no alternating collection/training schedule. The
 trainer performs real AdamW updates and waits after completing its configured
 passes over currently accepted data.
+
+## Unmarked-road qualification and follow mode
+
+The native queue uses Town04 road 51 for training and independent road 52 for
+validation; Town05 stays test-only. Parked vehicles must settle physically with
+their entire body on the road and at least 0.15 m from the curb. Passing can use
+up to 1.0 m of opposing road width only during the parked-car departure, pass and
+return, backed by observed clear RGB/depth road surface and a separate controlled
+scene inventory. Normal travel and the five-metre recovery remain centered in
+the right half. Pedestrian cases are stationary roadside fixtures. Whole-body
+clearance and the existing acceleration/jerk limits remain enforced.
+
+After setup and local native qualification, validate and execute an immutable
+queue. This example names the development corpus's retained queue; plans, surveys
+and queue artifacts are not bundled with the source checkout. Replace the root
+and queue with your installation's qualified artifacts:
+
+```powershell
+$datasetRoot = 'G:\lane-centering-dataset-v1'
+$queue = Join-Path $datasetRoot 'reports\unmarked\queues\native-grounded-v2-20261015T141939Z.json'
+$capturePython = '.\.venv\Scripts\python.exe'
+$trainingPython = (Resolve-Path '.\.venv-training\Scripts\python.exe').Path
+& $capturePython -m lane_behavior.collect $queue --root $datasetRoot
+& $capturePython -u -m lane_behavior.collect $queue --root $datasetRoot `
+  --port 2500 --loader-python $trainingPython --run
+```
+
+The queue waits for the current job on that port to finish, reserves its world,
+then releases it before admission. The other GPU continues collection. In a
+separate console, a new mixed trainer follows accepted examples concurrently:
+
+```powershell
+$datasetRoot = 'G:\lane-centering-dataset-v1'
+$trainingPython = (Resolve-Path '.\.venv-training\Scripts\python.exe').Path
+& $trainingPython -u -m lane_behavior.mixed_follow --corpus $datasetRoot `
+  --run-dir 'runs\cd210-unmarked-mixed' --cpu-threads 2
+```
+
+It waits until ordinary-lane and unmarked-road training and validation data are
+independently admitted, then performs real CD210 updates. Reuse the command to
+resume its checkpoint and optimizer state. Old curb-parked captures remain
+unaccepted. Queue artifacts, admission evidence, stop/resume controls and the
+installed `lane-unmarked-collect` / `lane-unmarked-follow` commands are documented
+in [the behavior workflow](docs/unmarked-road-behavior.md).
 
 ## Requirements
 

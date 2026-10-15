@@ -85,6 +85,18 @@ def test_cpu_checks_cannot_claim_qcom_readiness():
     assert device['runtime_ready'] and not device['driving_qualified']
 
 
+def test_mixed_precision_accepts_relative_forward_drift_but_checks_lateral_and_all_heads():
+    reference=np.zeros((12,1000),np.float32)
+    reference[:,0]=100.
+    actual=reference.copy();actual[:,0]+=.7
+    assert not assess(reference,actual,[.02]*12,backend='QCOM')['passed']
+    assert assess(reference,actual,[.02]*12,backend='QCOM',lateral_precision=True)['passed']
+    actual[:,1]=.3
+    assert not assess(reference,actual,[.02]*12,backend='QCOM',lateral_precision=True)['passed']
+    actual[:,1]=0.;actual[:,990]=.5
+    assert not assess(reference,actual,[.02]*12,backend='QCOM',lateral_precision=True)['passed']
+
+
 @pytest.mark.parametrize('failure',['position','yaw','other_head','latency','nan','negative_time'])
 def test_runtime_gate_rejects_bad_predictions_or_timings(failure):
     reference=np.zeros((12,1000),np.float32);actual=reference.copy();timings=[.01]*12

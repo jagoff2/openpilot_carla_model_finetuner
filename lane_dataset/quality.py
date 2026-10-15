@@ -27,6 +27,9 @@ class QualityConfig:
     recovery_limit_s: float = 4.
     recovery_offset_tolerance_m: float = .10
     recovery_heading_tolerance_rad: float = math.radians(1.)
+    recovery_hold_tolerance_m: float = .05
+    recovery_overshoot_limit_m: float = .05
+    maximum_held_recovery_offset_m: float = .30
     saturation_fraction: float = .98
     sustained_saturation_s: float = .25
     maximum_sweep_spacing_m: float = .05
@@ -42,6 +45,51 @@ class QualityReport:
 
     def to_dict(self):
         return asdict(self)
+
+
+def recovery_envelope(timestamps_s, offsets_m, onset_s, config=None, *, end_s=None):
+    """Bound the recovery exemption using the measured signed release offset.
+
+    A declared recovery may start off center; it may not hide an unrelated
+    excursion in the recurrent prefix or a large overshoot across the lane.
+    This supplements convergence, body clearance and measured dynamics.
+    """
+    c = config or QualityConfig()
+    t, offset = np.asarray(timestamps_s, float), np.asarray(offsets_m, float)
+    if (t.ndim != 1 or len(t) < 3 or offset.shape != t.shape or
+            not np.isfinite(t).all() or not np.isfinite(offset).all() or
+            np.any(np.diff(t) <= 0) or not math.isfinite(onset_s) or
+            onset_s < 0 or onset_s >= t[-1]-t[0]):
+        raise ValueError("recovery envelope requires finite timed offsets and an observed onset")
+    elapsed = t-t[0]
+    index = int(np.argmin(np.abs(elapsed-onset_s)))
+    errors = []
+    if abs(float(elapsed[index])-onset_s) > 1e-6:
+        errors.append("recovery_onset_not_recorded_frame")
+    end_s = min(float(elapsed[-1]), onset_s+c.recovery_limit_s) if end_s is None else end_s
+    if not math.isfinite(end_s) or not onset_s <= end_s <= elapsed[-1]+1e-6:
+        raise ValueError("recovery envelope end must lie after onset in the recording")
+    initial = float(offset[index])
+    prefix_error = float(np.max(np.abs(offset[:index+1]-initial)))
+    if onset_s > 0:
+        if abs(initial) < .15 or abs(initial) > c.maximum_held_recovery_offset_m+c.recovery_hold_tolerance_m:
+            errors.append("held_recovery_initial_offset_outside_allowed_range")
+        if prefix_error > c.recovery_hold_tolerance_m:
+            errors.append("recovery_prefix_does_not_hold_initial_offset")
+    direction = 1. if initial >= 0 else -1.
+    end_index = max(index+1, int(np.searchsorted(elapsed, end_s+1e-6, side="right")))
+    signed = offset[index:end_index]*direction
+    outward = float(max(0., np.max(signed)-abs(initial)))
+    overshoot = float(max(0., -np.min(signed)))
+    if outward > c.recovery_hold_tolerance_m:
+        errors.append("recovery_moves_farther_from_center")
+    if overshoot > c.recovery_overshoot_limit_m:
+        errors.append("recovery_overshoot_above_limit")
+    return dict(passed=not errors, errors=errors, onset_index=index, end_s=float(end_s),
+                signed_release_offset_m=initial, maximum_prefix_offset_error_m=prefix_error,
+                maximum_outward_excursion_m=outward, maximum_center_overshoot_m=overshoot,
+                hold_tolerance_m=c.recovery_hold_tolerance_m,
+                overshoot_limit_m=c.recovery_overshoot_limit_m)
 
 
 def swept_body_clearance(reference: LaneReference, positions_xyz, yaw_rad,
@@ -168,7 +216,9 @@ def qualify_episode(*, timestamps_s, positions_xyz, yaw_rad, speeds_mps,
         s,d=reference.project(position[:2],hint);hint=s;arc.append(s);offset.append(d)
         heading_error.append(float(wrap_angle(angle-reference.sample(s)[1])))
     arc=np.asarray(arc);offset=np.asarray(offset);heading_error=np.asarray(heading_error)
-    settled=np.ones(len(t),bool); recovery_time=0.
+    settled=np.ones(len(t),bool); recovery_time=0.; recovery_measurement=None
+    if not recovery and recovery_onset_s:
+        reasons.append("recovery_onset_without_declared_recovery")
     if recovery:
         if not math.isfinite(recovery_onset_s) or recovery_onset_s<0 or recovery_onset_s>=t[-1]-t[0]:
             raise ValueError('recovery onset must lie in the retained physical recording')
@@ -179,6 +229,9 @@ def qualify_episode(*, timestamps_s, positions_xyz, yaw_rad, speeds_mps,
         persistent=np.logical_and.accumulate(within[::-1])[::-1]
         indices=np.flatnonzero(persistent & (v>.2) & (t-t[0]>=recovery_onset_s-1e-8))
         recovery_time=float(t[indices[0]]-t[0]-recovery_onset_s) if len(indices) else float("inf")
+        recovery_measurement=recovery_envelope(t,offset,recovery_onset_s,c,
+            end_s=min(float(t[-1]-t[0]), recovery_onset_s+min(c.recovery_limit_s,recovery_time)))
+        reasons.extend(recovery_measurement['errors'])
         if recovery_time>c.recovery_limit_s: reasons.append("recovery_did_not_converge_within_four_seconds")
         settled=(t-t[0]>=recovery_onset_s+min(c.recovery_limit_s,recovery_time))
     if not np.any(settled): reasons.append("no_post_recovery_samples")
@@ -210,5 +263,5 @@ def qualify_episode(*, timestamps_s, positions_xyz, yaw_rad, speeds_mps,
         "maximum_lateral_jerk_mps3":max_jerk,"maximum_saturation_duration_s":max_saturation,
         "recovery_time_s":recovery_time,"progress_m":progress,"duration_s":float(t[-1]-t[0]),
         "minimum_speed_mps":float(v.min()),"maximum_speed_mps":float(v.max()),
-        "quality_limits":asdict(c),**sweep}
+        "quality_limits":asdict(c),"recovery_envelope":recovery_measurement,**sweep}
     return QualityReport(not reasons,tuple(reasons),metrics)

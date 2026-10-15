@@ -184,6 +184,7 @@ def test_preservation_migration_keeps_weights_optimizer_step_and_sampler(tmp_pat
     sources['production.py']='old-persistence-source'
     sources.pop('checkpoint_store.py')
     state=dict(config=asdict(cfg),step=7,counts={'episode':2},known={},failed={},
+        objective_version=production.OBJECTIVE_VERSION,
         last_validation={'step':7},source_hashes=sources)
     production.commit(tmp_path,model,optimizer,state)
     state['step']=8

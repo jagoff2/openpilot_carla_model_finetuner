@@ -71,11 +71,31 @@ def physical_check(shard):
     return m,t,physical,boundary,envelope
 
 
+def recovery_appearance_task(task):
+    """Rebind recovery setup after cloning a prepared catalogue appearance.
+
+    The screened catalogue stores appearance zero. Its physical offset is an
+    appearance-dependent command, so copying that value into appearance one
+    silently makes both recordings recover from the same side.
+    """
+    task=copy.deepcopy(task)
+    if task.get('family')=='straight_recovery' and task.get('recovery'):
+        appearance=task.get('appearance',0)
+        if not isinstance(appearance,int) or isinstance(appearance,bool) or appearance<0:
+            raise ValueError('recovery appearance must be a nonnegative integer')
+        magnitude=abs(float(task.get('initial_recovery_offset_m',.25)))
+        if not math.isfinite(magnitude) or not 0<magnitude<=.3:
+            raise ValueError('recovery setup offset must lie within (0, 0.3] meters')
+        task['initial_recovery_offset_m']=magnitude if appearance%2==0 else -magnitude
+        task['recovery_setup_policy']='appearance_even_right_odd_left_unlabelled_prefix_then_center_recovery'
+    return task
+
+
 def prepare_capture_task(task):
     """Check each queued task again in the worker before allocating simulator data."""
     from lane_dataset.inventory import sample_route,route_document
     from lane_dataset.boundary_reference import lane_facing_marking_reference
-    task=copy.deepcopy(task);speed=task['nominal_speed_mps']
+    task=recovery_appearance_task(task);speed=task['nominal_speed_mps']
     task['survey_road_surface']=True
     if any(hi-lo<2.*speed-1e-6 for lo,hi in task['maneuver_phase_ranges'].values()):
         raise ValueError('phase_cannot_contain_four_distinct_half_second_labels_at_calibrated_speed')
@@ -282,7 +302,7 @@ def normalize_task(task):
     result['route']['section']['family']=task['family'];result['route']['section']['direction']=result['direction']
     if recovery:
         result.update(recovery=True,initial_recovery_offset_m=.25 if task['appearance']%2==0 else -.25,minimum_ticks=600)
-    return result
+    return recovery_appearance_task(result)
 
 
 @lru_cache(maxsize=512)
@@ -298,6 +318,16 @@ def accepted_manifests(root):
 
 
 def publish_candidate(root,result,task,test_report):
+    """Serialize both corpus formats and check supplemental geometry splits."""
+    from lane_behavior.split_guard import publication_lock,assert_supplemental_split
+    with publication_lock(root):
+        geometry=read(Path(result['shard'])/'geometry.json')
+        manifest=read(Path(result['shard'])/'manifest.json')
+        assert_supplemental_split(root,section=geometry['section'],split=manifest['split'])
+        return _publish_legacy_candidate(root,result,task,test_report)
+
+
+def _publish_legacy_candidate(root,result,task,test_report):
     """Freeze an append-only split version, bind measured evidence, then replay admission."""
     from lane_dataset.splits import GeometrySection,RoadInterval,GeometryGroup,SplitAssignment,audit_split_overlap,group_geometry_sections
     from lane_dataset.storage import Store
@@ -369,11 +399,17 @@ def publish_candidate(root,result,task,test_report):
 
 def snapshot(root,state):
     from reports.collection_failures import capture_statistics
-    manifests=accepted_manifests(root);counts=Counter(m['split'] for m in manifests)
+    from lane_dataset.review_hold import active_holds
+    holds=active_holds(root)
+    all_manifests=accepted_manifests(root)
+    manifests=[m for m in all_manifests if m['episode_id'] not in holds]
+    counts=Counter(m['split'] for m in manifests)
     family=Counter((m['split'],m['family']) for m in manifests)
     document=dict(updated=time.time(),pid=os.getpid(),status=state.get('status','running'),
         accepted_labels={s:20*counts[s] for s in Config().targets},target_labels=Config().targets,
         accepted_total=20*len(manifests),target_total=5000,active=state.get('active'),
+        accepted_artifact_labels=20*len(all_manifests),
+        review_held_labels=20*(len(all_manifests)-len(manifests)),review_held_episodes=sorted(holds),
         **capture_statistics(state),
         accepted_by_family={s+'/'+f:20*n for (s,f),n in family.items()},last_result=state.get('last_result'))
     document['history_crop_loss_labels']={s:sum(m['history_crop_loss_count'] for m in manifests if m['split']==s) for s in Config().targets}
@@ -381,7 +417,8 @@ def snapshot(root,state):
     document['configured_workers']=state.get('configured_workers',[])
     write_json(root/'reports/automatic/status.json',document)
     write_json(root/'training-index.partial.json',dict(schema_version=1,complete=False,accepted_labels=document['accepted_total'],
-        episodes=[str(p.relative_to(root)) for p in sorted((root/'accepted').glob('*/manifest.json'))],config_sha256=Config().digest()))
+        episodes=[str(p.relative_to(root)) for p in sorted((root/'accepted').glob('*/manifest.json'))
+            if p.parent.name not in holds],review_held_episodes=sorted(holds),config_sha256=Config().digest()))
     return document
 
 
@@ -449,6 +486,9 @@ def candidate_screen(root,task):
     from lane_dataset.splits import GeometrySection,RoadInterval,group_geometry_sections
     from lane_dataset.maneuvers import maneuver_event_errors
     if task.get('route'):
+        from lane_behavior.split_guard import supplemental_split_errors
+        conflicts=supplemental_split_errors(root,section=task['route']['section'],split=task['split'])
+        if conflicts:return 'supplemental_behavior_split_conflict:'+','.join(conflicts)
         semantic_errors=maneuver_event_errors(task['route'],task['family'],task.get('maneuver_phase_ranges'))
         if semantic_errors:return semantic_errors[0]
     manifests=accepted_manifests(root);related=[m for m in manifests if m['split']==task['split'] and m['family']==task['family']]
@@ -517,7 +557,7 @@ def candidate_queue(tasks,root=None):
                 task['route']['section']['direction']=task['direction']
                 task.update(split=split,appearance=appearance,seed=candidate['seed']+appearance,
                     episode_id=candidate['group_id']+'-'+split+'-'+str(appearance))
-                yield task,True
+                yield recovery_appearance_task(task),True
     for task in tasks:yield task,False
     # Replacement candidates are discovered automatically when the initial plan
     # lacks usable routes. Every expanded envelope is screened against accepted
