@@ -132,3 +132,22 @@ with two appearances for training. Live worker status includes its split and
 family. Twenty-three targeted tests passed, including recovery from the observed
 imbalance, concurrent reservations, fixed held-out geometry, and convergence to
 an 80/10/10 allocation under successful admissions.
+
+The next audit found 105 completed capture jobs with 16 accepted recordings;
+128 additional candidates had been skipped before capture. The old status
+counter incorrectly grouped those cheap skips with failed recordings. Among
+the 30 jobs completed under capture policy 6, 12 were accepted. The status
+now reports capture outcomes, pre-capture skips, and current-policy results
+separately. These are job counts, not GPU-time-weighted throughput estimates.
+
+Retry memory previously omitted physical jerk/boundary failures and keyed
+warmup failures only by full route ID. Different route tails could therefore
+repeat the same failed initialization. Memory now records those physical
+failures, stops further copies after two appearances fail, and fingerprints
+both boundaries throughout the maximum warmup travel budget. Two failed
+appearances of an identical initialization corridor also block other route IDs
+with that corridor. Different paths, speeds, maps and capture-policy versions
+remain eligible. Historical result files rebuild the memory on restart; no
+quality threshold or held-out split is changed. The relevant suite passed 36
+tests. Actual accepted training data increased from 40 to 60 labels during the
+audit; future acceptance rates must still be measured.

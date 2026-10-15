@@ -20,7 +20,7 @@ from lane_dataset.config import Config, PROJECT, write_json
 from lane_dataset.simulator import world_owner
 from reports import automatic_corpus as corpus
 from reports.collection_failures import (retry_after_policy_change, remember_failure,
-    cached_failure, archive_previous_result)
+    cached_failure, archive_previous_result, restore_failure_memory)
 from lane_dataset.capture_policy import CAPTURE_POLICY_VERSION
 
 
@@ -167,6 +167,7 @@ def save(root, state, workers):
 
 def finish(root, state, worker, test_report):
     result = worker.result()
+    policy_version = result.get('capture_policy_version')
     retry_marker = worker.result_path.with_name(worker.result_path.stem+'.before-recovery-policy.json')
     if result['status'] == 'completed_capture_needs_postprocessing':
         return Worker(root, worker.job_path, worker.port, reprocess=True)
@@ -192,6 +193,8 @@ def finish(root, state, worker, test_report):
                 corpus.retain_rejection_diagnostics(root, {**result, 'errors': [str(error)]})
         result = dict(status='rejected', errors=[str(error)], traceback=traceback.format_exc())
     state['completed'][worker.id] = result
+    state.setdefault('capture_jobs',{})[worker.id] = dict(status=result['status'],
+        capture_policy_version=policy_version)
     remember_failure(state,worker.job['task'],result)
     state['last_result'] = {**result, 'job': worker.id}
     corpus.log('collection_job_finished', gpu=(worker.port-2400)//100, job=worker.id,
@@ -212,6 +215,7 @@ def run(root, plan_path, test_report):
         Store(root).recover()
         state_path = output/'state.json'
         state = corpus.read(state_path) if state_path.exists() else dict(completed={}, plan=str(plan_path))
+        restore_failure_memory(output, state)
         state['status'] = 'running'
         workers = {}
         # Recover every live child before selecting any new job, including jobs

@@ -368,12 +368,13 @@ def publish_candidate(root,result,task,test_report):
 
 
 def snapshot(root,state):
+    from reports.collection_failures import capture_statistics
     manifests=accepted_manifests(root);counts=Counter(m['split'] for m in manifests)
     family=Counter((m['split'],m['family']) for m in manifests)
     document=dict(updated=time.time(),pid=os.getpid(),status=state.get('status','running'),
         accepted_labels={s:20*counts[s] for s in Config().targets},target_labels=Config().targets,
         accepted_total=20*len(manifests),target_total=5000,active=state.get('active'),
-        completed_jobs=len(state['completed']),rejected_jobs=sum(v.get('status')!='accepted' for v in state['completed'].values()),
+        **capture_statistics(state),
         accepted_by_family={s+'/'+f:20*n for (s,f),n in family.items()},last_result=state.get('last_result'))
     document['history_crop_loss_labels']={s:sum(m['history_crop_loss_count'] for m in manifests if m['split']==s) for s in Config().targets}
     document['active_workers']=list(state.get('workers',{}).values())
