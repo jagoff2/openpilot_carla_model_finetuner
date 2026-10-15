@@ -267,3 +267,6 @@ and observation payloads. A complete maneuver prefix with its required history
 and future suffix can be recovered and submitted to the normal admission checks;
 incomplete maneuvers remain unaccepted. Windows directory publication retries
 temporary sharing violations and never replaces an existing destination.
+
+Run `./monitor-trainer.ps1` to watch the existing trainer's process, phase, optimizer steps, accepted split counts, and latest held-out lateral loss. It does not start another trainer. Use `-RunDirectory <path>` to monitor a different run, or `-Once` for a single status snapshot.
+
