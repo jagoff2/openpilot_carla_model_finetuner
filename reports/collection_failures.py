@@ -41,7 +41,8 @@ def priority_retries(output):
     state=json.loads(state_path.read_text())
     candidates=[]
     for job,result in state.get('completed',{}).items():
-        labels=result.get('labels',{}).get('label_count',0)
+        report=result.get('labels',{})
+        labels=report.get('label_count',0) if isinstance(report,dict) else 0
         if labels and retry_after_policy_change(result):candidates.append((-labels,job))
     for _,job in sorted(candidates):
         path=output/(job+'.job.json')

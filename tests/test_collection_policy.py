@@ -75,7 +75,8 @@ def test_corrected_admission_retries_completed_events_before_unproven_routes(tmp
     assert retry_after_policy_change(result)
     assert not retry_after_policy_change({**result,'capture_policy_version':3})
     assert not retry_after_policy_change({**result,'status':'accepted'})
-    write_json(tmp_path/'state.json',{'completed':{'near':result,'less':{**result,'labels':{'label_count':18}}}})
+    write_json(tmp_path/'state.json',{'completed':{'near':result,'less':{**result,'labels':{'label_count':18}},
+        'accepted':{'status':'accepted','labels':20}}})
     for name in ('near','less'):
         write_json(tmp_path/(name+'.job.json'),{'task':{'episode_id':name,'route':{'actual':True},
             'maneuver_phase_ranges':{'approach':[10.,20.]}}})
