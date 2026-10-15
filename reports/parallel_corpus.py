@@ -137,8 +137,23 @@ class Worker:
 
 
 def busy_group(task, workers):
-    # Do not race two split assignments for the same not-yet-admitted geometry.
-    return any(w.job['task']['group_id'] == task['group_id'] for w in workers.values())
+    # Different route hashes can still cover the same roads (for example,
+    # adjacent lanes). Reserve the physical envelope before either admission.
+    from lane_dataset.splits import GeometrySection,RoadInterval,group_geometry_sections
+    def section(value):
+        raw=value.get('route',{}).get('section')
+        return None if raw is None else GeometrySection(**{**raw,
+            'road_intervals':tuple(RoadInterval(**row) for row in raw['road_intervals'])})
+    proposed=None
+    for worker in workers.values():
+        other=worker.job['task']
+        if other['group_id']==task['group_id']:return True
+        proposed=section(task) if proposed is None else proposed
+        active=section(other)
+        if proposed is None or active is None:continue
+        if proposed.section_id==active.section_id or len(group_geometry_sections([proposed,active]))<2:
+            return True
+    return False
 
 
 def save(root, state, workers):

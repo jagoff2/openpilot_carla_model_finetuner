@@ -101,6 +101,20 @@ def test_reattached_worker_reports_current_warmup_without_replaying_old_failure(
     worker.close()
 
 
+def test_parallel_workers_do_not_recapture_overlapping_road_under_different_hashes():
+    from dataclasses import asdict
+    from lane_dataset.splits import GeometrySection,RoadInterval
+    def routed(name,start,end,town='Town06'):
+        result=task(name)
+        result['route']={'section':asdict(GeometrySection(section_id=name,town=town,
+            road_intervals=(RoadInterval('20',start,end),),family='constant_radius',direction='right'))}
+        return result
+    workers={2400:SimpleNamespace(job={'task':routed('lane-a',0.,100.)})}
+    assert parallel.busy_group(routed('lane-b',40.,140.),workers)
+    assert not parallel.busy_group(routed('other',120.,200.),workers)
+    assert not parallel.busy_group(routed('other-town',0.,100.,'Town07'),workers)
+
+
 def test_publication_rechecks_quota_after_other_worker_admission(tmp_path, monkeypatch):
     job = tmp_path/'one.job.json'
     worker = SimpleNamespace(id='one', port=2500, job_path=job, job=dict(task=task('one')),
