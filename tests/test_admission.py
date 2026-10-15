@@ -55,6 +55,21 @@ def test_selection_spreads_four_labels_across_each_reviewed_phase():
     assert all(list(phases.values()).count(phase) == 4 for phase in PHASES)
 
 
+def test_bad_far_interpolation_masks_future_without_rejecting_valid_near_action():
+    from lane_dataset.admission import interpolation_supports_action
+    proof=dict(original_road_arc_m=[0.,10.,20.,30.],interval_geometry_valid=[True,True,False],
+        spline_evidence_frames=[])
+    assert interpolation_supports_action(proof,2.,3.)
+    assert interpolation_supports_action(proof,19.,20.)
+    assert not interpolation_supports_action(proof,19.,20.01)
+    assert not interpolation_supports_action(proof,-1.,1.)
+    telemetry=dict(timestamp=np.arange(301)*.05,route_s=np.arange(301)*.25)
+    mask,_=_plan_support(dict(arc_m=[0.,10.,20.,30.]),telemetry,0,support_fixture(4),proof)
+    query=PLAN_TIMES*5.
+    assert mask[query<=20.].all()
+    assert not mask[query>20.].any()
+
+
 def reference_samples():
     yaw = np.linspace(-1, 2, 100)
     rate = np.where(np.arange(100) % 20 < 10, .12, -.18)

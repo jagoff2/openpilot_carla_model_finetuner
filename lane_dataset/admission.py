@@ -453,6 +453,17 @@ def select_phase_indices(indices, route_s, phase_ranges=None, limit=20):
     return np.asarray(sorted(chosen), int), phases, errors
 
 
+def interpolation_supports_action(interpolation, start, end):
+    """Bad distant intervals mask future targets, not a valid immediate action."""
+    knots=np.asarray(interpolation['original_road_arc_m'],float)
+    valid=np.asarray(interpolation['interval_geometry_valid'],bool)
+    if (len(knots)<2 or valid.shape!=(len(knots)-1,) or not np.isfinite([start,end]).all()
+            or end<start or start<knots[0] or end>knots[-1]):return False
+    lo=max(0,int(np.searchsorted(knots,start,side='right'))-1)
+    hi=min(len(valid)-1,max(lo,int(np.searchsorted(knots,end,side='left'))-1))
+    return bool(valid[lo:hi+1].all())
+
+
 def _plan_support(geometry, telemetry, index, support, interpolation=None):
     """Map each time sample to paired lane knots and a continuous observed path.
 
@@ -678,7 +689,7 @@ def _build_labels_unlocked(shard_path, *, dataset_root=None):
                     action_end_s = current_s + float(telemetry["speed"][index])*frames[index]["action_t"][0]
                     if current_s < interpolation["original_road_arc_m"][0] or action_end_s > interpolation["original_road_arc_m"][-1]:
                         reasons.append("immediate_action_requires_extrapolation_beyond_observed_corridor")
-                    if not all(interpolation["interval_geometry_valid"]):
+                    if not interpolation_supports_action(interpolation,current_s,action_end_s):
                         reasons.append("observed_interpolation_geometry_disagreement_above_five_cm")
                 except (ValueError, TypeError) as error:
                     reasons.append("observed_interpolation_invalid:"+str(error))
