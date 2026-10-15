@@ -21,7 +21,8 @@ def failure_kind(result):
 def retry_after_policy_change(result):
     return (result.get('capture_policy_version',0)<CAPTURE_POLICY_VERSION
         and result.get('status') in ('failed','rejected','worker_process_failed','geometry_failure_cached')
-        and (failure_kind(result) is not None or any('WinError 5' in str(e) for e in result.get('errors',[]))))
+        and (failure_kind(result) is not None or any('WinError 5' in str(e) or 'explicit stop file' in str(e)
+            for e in result.get('errors',[]))))
 
 
 def remember_failure(state,task,result):

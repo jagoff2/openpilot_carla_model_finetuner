@@ -33,6 +33,18 @@ def test_reject_unqualified_no_overwrite_bounded_retry(tmp_path):
         store.reserve("episode", 0, 1000000)
 
 
+def test_new_collector_revision_gets_bounded_retries_and_preserves_old_attempts(tmp_path):
+    store=Store(tmp_path,dataclasses.replace(Config(),minimum_free_bytes=0))
+    paths=[]
+    for _ in range(3):
+        token,path=store.reserve('episode',0,1000000,retry_policy=1)
+        paths.append(store.finish(token,False,'old collector failure'))
+    with pytest.raises(RuntimeError,match='bounded'):store.reserve('episode',0,1000000,retry_policy=1)
+    token,path=store.reserve('episode',0,1000000,retry_policy=2)
+    assert '-a4-' in token and all(p.is_dir() for p in paths)
+    store.finish(token,False,'new attempt retained')
+
+
 def test_publish_hashes_and_crash_recovery(tmp_path):
     store = Store(tmp_path, dataclasses.replace(Config(), minimum_free_bytes=0))
     token, path = store.reserve("episode", 0, 1000000)

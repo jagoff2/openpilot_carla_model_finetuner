@@ -82,7 +82,8 @@ def test_depth_fixture_uses_independent_geometry_at_exact_pixels(monkeypatch):
             if a[0]<2.5:  # Ego collision box surrounds the mounted camera.
                 return [SimpleNamespace(location=Location(*a),label=99)]
             t=-a[2]/(b[2]-a[2])
-            return [] if not 0<t<1 else [SimpleNamespace(location=Location(*(a+t*(b-a))),label=1)]
+            return [] if not 0<t<1 else [SimpleNamespace(location=Location(*a),label=99),
+                SimpleNamespace(location=Location(*(a+t*(b-a))),label=1)]
     x=np.arange(0.,40.,.5);left=np.c_[x,np.full(len(x),-1.75),np.zeros(len(x))];right=left.copy();right[:,1]=1.75
     ref=LaneReference(left,right)
     k=np.array([[300.,0,320.],[0,300.,240.],[0,0,1.]])
@@ -97,3 +98,9 @@ def test_depth_fixture_uses_independent_geometry_at_exact_pixels(monkeypatch):
     damaged={**images,'narrow_depth':depth*1.2}
     report=collision_depth_fixture(damaged,SimpleNamespace(profiles=[profile,profile]),ref,World(),OPTICAL_FROM_CARLA)
     assert not report['narrow']['qualified']
+    # The route itself can start outside the narrow FOV. Other visible road
+    # still supplies independent calibration, without consulting depth errors.
+    behind=LaneReference(left-np.array([50.,0,0]),right-np.array([50.,0,0]))
+    grid_images={**images,**{cam+'_semantic_segmentation':np.ones((480,640),np.uint8) for cam in ('narrow','wide')}}
+    report=collision_depth_fixture(grid_images,SimpleNamespace(profiles=[profile,profile]),behind,World(),OPTICAL_FROM_CARLA)
+    assert all(v['qualified'] for v in report.values())

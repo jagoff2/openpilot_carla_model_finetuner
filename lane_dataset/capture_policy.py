@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import math
 
-CAPTURE_POLICY_VERSION = 3
+CAPTURE_POLICY_VERSION = 4
 SPEED_TOLERANCE_MPS = .1
 
 

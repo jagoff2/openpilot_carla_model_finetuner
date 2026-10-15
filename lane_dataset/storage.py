@@ -80,16 +80,31 @@ class Store:
         with self.transaction() as db:
             return self._snapshot(db)
 
-    def reserve(self, episode, worker, worst_case_bytes):
+    def reserve(self, episode, worker, worst_case_bytes, *, retry_policy=None):
         if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{0,100}", episode):
             raise ValueError("unsafe episode identifier")
         if worst_case_bytes <= 0:
             raise ValueError("reservation must be positive")
+        if retry_policy is not None and (type(retry_policy) is not int or retry_policy<1):
+            raise ValueError('retry policy must be a positive collector revision')
         with self.transaction() as db:
             existing = db.execute("SELECT * FROM runs WHERE episode=?", (episode,)).fetchall()
             if (self.root / "accepted" / episode).exists() or any(r["status"] in ("active", "accepted") for r in existing):
                 raise FileExistsError(f"episode already active or accepted: {episode}")
-            if len(existing) >= self.config.max_attempts:
+            attempts=existing
+            if retry_policy is not None:
+                attempts=[]
+                for prior in existing:
+                    directory=Path(prior['path'])
+                    try:
+                        reservation=json.loads((directory/'reservation.json').read_text())
+                        policy=reservation.get('retry_policy')
+                        if policy is None:
+                            manifest=directory/'manifest.json'
+                            policy=json.loads(manifest.read_text()).get('capture_policy_version',0) if manifest.exists() else 0
+                    except (OSError,ValueError):policy=retry_policy  # Corruption cannot grant a free retry.
+                    if policy==retry_policy:attempts.append(prior)
+            if len(attempts) >= self.config.max_attempts:
                 raise RuntimeError("bounded retry limit reached")
             snap = self._snapshot(db, worst_case_bytes)
             if snap["projected_bytes"] > self.config.corpus_cap_bytes or snap["projected_free_bytes"] < self.config.minimum_free_bytes:
@@ -98,7 +113,7 @@ class Store:
             stage = self.root / "staging" / token
             stage.mkdir()
             db.execute("INSERT INTO runs VALUES(?,?,?,?,?,?,?,?,?,?)", (token, episode, len(existing)+1, worker, os.getpid(), "active", int(worst_case_bytes), str(stage), time.time(), None))
-            write_json(stage / "reservation.json", dict(id=token, episode=episode, worker=worker, pid=os.getpid(), reserved_bytes=worst_case_bytes, storage=snap))
+            write_json(stage / "reservation.json", dict(id=token, episode=episode, worker=worker, pid=os.getpid(), reserved_bytes=worst_case_bytes, storage=snap,retry_policy=retry_policy))
         return token, stage
 
     def check(self, token):

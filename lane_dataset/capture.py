@@ -192,7 +192,7 @@ def _capture_owned(root,port,worker,ticks,benchmark,task):
     calibration,binding=_calibration(root,(task or {}).get("nominal_speed_mps",5.))
     episode=(task or {}).get("episode_id",f"{'benchmark' if benchmark else 'development'}-w{worker}-{time.time_ns()}")
     bound=2*archive.archive_worst_case_bytes(dtype=np.uint8,frame_shape=(6,128,256),expected_count=ticks)+256*1024**2
-    token,out=store.reserve(episode,worker,bound)
+    token,out=store.reserve(episode,worker,bound,retry_policy=CAPTURE_POLICY_VERSION)
     manifest=dict(schema_version=1,status="development",episode_id=episode,geometry_group_id=(task or {}).get("group_id","development-town04-r38"),
                   split=(task or {}).get("split","development"),family=(task or {}).get("family","straight_recovery"),
                   worker=worker,port=port,seed=(task or {}).get("seed",config.seed+worker),
@@ -329,6 +329,8 @@ def _capture_owned(root,port,worker,ticks,benchmark,task):
                     try:
                         if terminal_stopping:
                             raise ValueError('planned_unlabelled_terminal_suffix_stop')
+                        if not recording and (task or {}).get('physical_map_initialization') and row['speed']<.8*manifest['nominal_speed_mps']:
+                            raise ValueError('physical_rolling_speed_initialization')
                         observable=observed_reference(reference,support,row["position_world"],row["timestamp"])
                         yaw=row["rotation_world"][2];acceleration=row["acceleration_world"]
                         measured_lateral=-math.sin(yaw)*acceleration[0]+math.cos(yaw)*acceleration[1]
