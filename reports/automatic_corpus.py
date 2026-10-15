@@ -486,6 +486,10 @@ def needs_recovery_policy_retry(result):
 
 
 def candidate_queue(tasks,root=None):
+    if root is not None:
+        from reports.collection_failures import priority_retries
+        for task in priority_retries(Path(root)/'reports/automatic'):
+            yield task,True
     pilot_path=Path(root or DEFAULT_ROOT)/'planning/town06-flat-turn-plan.json'
     pilot=read(pilot_path)[0]
     pilot.update(episode_id='auto-town06-road40-terminal-0',group_id='auto-town06-road40-terminal',split='train',terminal_stop_route_m=170.,semantic_qa=True)

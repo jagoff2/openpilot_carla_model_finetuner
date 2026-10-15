@@ -67,6 +67,21 @@ def test_failure_memory_is_versioned_and_appearance_aware():
     assert not cached_failure(state,{**task,'appearance':1})
 
 
+def test_corrected_admission_retries_completed_events_before_unproven_routes(tmp_path):
+    from reports.collection_failures import priority_retries
+    from lane_dataset.config import write_json
+    result=dict(status='rejected',errors=['insufficient_phase_candidates:approach:3/4',
+        'rendered_boundary_disagreement_above_five_cm'],labels={'label_count':19})
+    assert retry_after_policy_change(result)
+    assert not retry_after_policy_change({**result,'capture_policy_version':3})
+    assert not retry_after_policy_change({**result,'status':'accepted'})
+    write_json(tmp_path/'state.json',{'completed':{'near':result,'less':{**result,'labels':{'label_count':18}}}})
+    for name in ('near','less'):
+        write_json(tmp_path/(name+'.job.json'),{'task':{'episode_id':name,'route':{'actual':True},
+            'maneuver_phase_ranges':{'approach':[10.,20.]}}})
+    assert [task['episode_id'] for task in priority_retries(tmp_path)]==['near','less']
+
+
 def test_depth_fixture_uses_independent_geometry_at_exact_pixels(monkeypatch):
     import sys
     from lane_dataset.depth_fixture import collision_depth_fixture

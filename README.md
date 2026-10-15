@@ -103,7 +103,11 @@ This opens separate visible collection and training consoles. `./start.ps1
 The collector owns both GPUs, starts/reuses their CARLA servers, records RGB/depth,
 camera history, telemetry and boundary observations, checks physical behavior and
 label support, and publishes accepted episodes. Rejections are recorded and the
-queue advances. Rejected large payloads are discarded while diagnostics remain.
+queue advances. Captures with recorded frames retain their payloads for recovery;
+empty preflight failures retain diagnostics. After a collector correction,
+completed events rejected by the corrected admission checks are retried before
+unproven routes. Warmup frames and recording progress do not increase the accepted
+count; publication follows label and physical checks.
 
 The trainer follows `training-index.partial.json`, regenerates separate original
 and student recurrent histories, and updates both vision and policy using accepted

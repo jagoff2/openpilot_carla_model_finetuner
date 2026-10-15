@@ -375,6 +375,13 @@ class BicycleMPC:
             delta_xy=roll[1:,:2]-xyz[:,:2]
             lateral=-np.sin(heading)*delta_xy[:,0]+np.cos(heading)*delta_xy[:,1]
             longitudinal=np.cos(heading)*delta_xy[:,0]+np.sin(heading)*delta_xy[:,1]
+            # Before the first observed knot, q is clamped to that knot. Its
+            # distance is an arrival distance, not a longitudinal tracking
+            # error. Penalizing it requests maximum acceleration to catch a
+            # stationary distant point and fights the calibrated speed bounds.
+            # The speed objective still controls forward motion; lateral and
+            # body constraints continue to use the observed corridor.
+            longitudinal=np.where(progress>=reference.s[0],longitudinal,0.)
             body_heading_error=wrap_angle(roll[1:,2]-heading)
             beta=np.arcsin(np.clip(p.reference_offset_m*roll[1:,4]/np.maximum(roll[1:,3],.1),-.95,.95))
             heading_error=wrap_angle(roll[1:,2]+beta-heading)

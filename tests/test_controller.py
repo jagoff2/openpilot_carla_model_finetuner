@@ -105,6 +105,21 @@ def test_first_visible_goal_ahead_does_not_shrink_stopping_distance():
     assert command.curvature_1pm==pytest.approx(0.,abs=1e-6)
 
 
+@pytest.mark.parametrize('first_distance',[10.,40.])
+def test_distant_visible_goal_does_not_demand_acceleration_past_cruise(first_distance):
+    ref=road(length=100.,count=201)
+    corridor=ref.admit(np.ones(201,bool),[(EvidenceFrame(1,0.,'wide'),)]*201,0.,
+        start_index=int(first_distance*2))
+    calibration=replace(SteeringCalibration.fixture(delay_s=0.,time_constant_s=.03),
+        qualified=True,speed_min_mps=3.464,speed_max_mps=3.55)
+    command=BicycleMPC(calibration,MPCConfig(require_calibration=False)).control(
+        VehicleState(0.,0.,0.,3.4,0.),corridor,3.5)
+    assert command.accepted,command.reasons
+    assert command.predicted_states[:,3].max()<=3.501
+    assert command.predicted_states[-1,3]==pytest.approx(3.5,abs=.002)
+    assert command.min_constraint_margin>=-1e-4
+
+
 def test_distant_paint_transition_does_not_step_cruise_speed():
     reference=road(length=60.,count=121)
     left=reference.left_xyz.copy();right=reference.right_xyz.copy()
