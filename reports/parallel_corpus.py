@@ -108,7 +108,8 @@ class Worker:
 
     def summary(self):
         return dict(job=self.id, pid=self.process.pid, gpu=(self.port-2400)//100,
-            port=self.port, log=str(self.log_path), stage=self.stage, latest=self.latest)
+            port=self.port, log=str(self.log_path), stage=self.stage, latest=self.latest,
+            split=self.job['task']['split'], family=self.job['task']['family'])
 
     def result(self):
         if not self.result_path.exists():
@@ -272,7 +273,8 @@ def run(root, plan_path, test_report):
                             continue
                         from reports.candidate_priority import boundary_risk
                         corpus.log('collection_candidate_selected',job=job_id,gpu=(port-2400)//100,
-                            town=task.get('town'),family=task['family'],boundary_priority=boundary_risk(task))
+                            town=task.get('town'),split=task['split'],family=task['family'],
+                            boundary_priority=boundary_risk(task))
                         job_path = output/(job_id+'.job.json')
                         write_json(job_path, dict(id=job_id, task=task))
                         result_path = job_path.with_suffix('.result.json')

@@ -60,7 +60,7 @@ def ensure_rankings(path):
     return target
 
 
-def read_cache(path):
+def read_cache(path, *, test=None):
     ranking=ensure_rankings(path)
     db=sqlite3.connect(f'file:{Path(path).as_posix()}?mode=ro',uri=True)
     try:
@@ -74,8 +74,9 @@ def read_cache(path):
                 PARTITION BY risk,family,test ORDER BY gap,missing,ticks,id) AS ordinal
             FROM queue.ranking)
             SELECT candidates.payload FROM ordered JOIN candidates USING(id)
+            WHERE (? IS NULL OR test=?)
             ORDER BY risk,ordinal,family,test,id'''
-        for payload, in db.execute(query):
+        for payload, in db.execute(query, (test, test)):
             yield json.loads(zlib.decompress(payload))
     finally:
         db.close()

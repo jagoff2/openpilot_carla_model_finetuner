@@ -119,3 +119,16 @@ revocation report. Its original manifest and payloads were preserved. Training
 resumed from the prior committed step-8 checkpoint; the best checkpoint and
 export artifacts were not changed. The combined regression suite passed 258
 tests with the two existing SLSQP bounds warnings.
+
+The automatic queue also offered every non-test geometry to validation before
+training. Successful validation publication then correctly prevented that same
+geometry from being used for training. This produced 200 validation labels but
+only 40 training labels, despite configured targets of 500 and 4,000 respectively.
+The cache queue now selects the split with the smallest accepted plus in-flight
+fraction of its target, using independent cursors for train, validation and test.
+Town05 remains test-only, accepted split assignments remain fixed, and family
+quotas and boundary ranking still apply. New geometry is offered to one split,
+with two appearances for training. Live worker status includes its split and
+family. Twenty-three targeted tests passed, including recovery from the observed
+imbalance, concurrent reservations, fixed held-out geometry, and convergence to
+an 80/10/10 allocation under successful admissions.

@@ -501,20 +501,20 @@ def candidate_queue(tasks,root=None):
     yield {**pilot,'appearance':1,'episode_id':'auto-town06-road40-terminal-1'},True
     pool=None if root is None else Path(root)/'reports/automatic/screened-pool.json'
     if pool is not None and (pool.exists() or pool.with_suffix('.sqlite').exists()):
-        from reports.candidate_cache import build_cache,read_cache
+        from reports.candidate_cache import build_cache
+        from reports.candidate_priority import scheduled_candidates
         cache=pool.with_suffix('.sqlite')
         if not cache.exists():cache=build_cache(pool)
-        for candidate in read_cache(cache):
+        for candidate,split in scheduled_candidates(cache,root):
             try:direction=event_direction(candidate['route'],candidate['maneuver_phase_ranges'],candidate['family'])
             except ValueError:continue
-            for split in (('test',) if candidate['town']=='Town05' else ('validation','train')):
-                for appearance in range(2 if split=='train' else 1):
-                    task=copy.deepcopy(candidate)
-                    task['direction']=direction
-                    task['route']['section']['direction']=task['direction']
-                    task.update(split=split,appearance=appearance,seed=candidate['seed']+appearance,
-                        episode_id=candidate['group_id']+'-'+split+'-'+str(appearance))
-                    yield task,True
+            for appearance in range(2 if split=='train' else 1):
+                task=copy.deepcopy(candidate)
+                task['direction']=direction
+                task['route']['section']['direction']=task['direction']
+                task.update(split=split,appearance=appearance,seed=candidate['seed']+appearance,
+                    episode_id=candidate['group_id']+'-'+split+'-'+str(appearance))
+                yield task,True
     for task in tasks:yield task,False
     # Replacement candidates are discovered automatically when the initial plan
     # lacks usable routes. Every expanded envelope is screened against accepted
@@ -534,7 +534,11 @@ def candidate_queue(tasks,root=None):
                         section,route=route_document(points,town)
                         group='search-'+section.section_id
                         seed=int(hashlib.sha256(group.encode()).hexdigest()[:8],16)
-                        for split in (('test',) if town=='Town05' else ('validation','train')):
+                        from reports.candidate_priority import preferred_split
+                        progress=read(Path(root)/'reports/automatic/status.json') if root is not None else {}
+                        split=preferred_split(progress.get('accepted_labels',{}),Config().targets,
+                            ('test',) if town=='Town05' else ('train','validation'))
+                        for split in (() if split is None else (split,)):
                             for appearance in range(2 if split=='train' else 1):
                                 yield dict(episode_id=f'{group}-{split}-{appearance}',group_id=group,
                                     town=town,start=route['start'],route=route,branch=branch,split=split,
