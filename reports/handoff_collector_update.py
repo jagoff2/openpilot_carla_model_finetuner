@@ -34,17 +34,23 @@ def main():
         if line.startswith('+++ b/'):
             relative = Path(line[6:])
             source = (PROJECT / relative).resolve()
-            if source.parent != PROJECT / 'lane_dataset' or not source.is_file():
-                raise ValueError('update must modify existing lane_dataset source files only')
+            if source.parent not in (PROJECT/'lane_dataset', PROJECT/'reports') or source.suffix != '.py' or not source.is_file():
+                raise ValueError('update must modify existing collector Python sources only')
             sources.append((relative, source, sha256_file(source)))
     if not sources:
         raise ValueError('empty source update')
-    owner = psutil.Process(args.supervisor)
-    command = owner.cmdline()
-    if ('reports.automatic_corpus' not in command or '--job' in command or str(root) not in command):
-        raise ValueError('supervisor identity mismatch')
-    owner.terminate()
-    owner.wait(timeout=15)
+    try:
+        owner = psutil.Process(args.supervisor)
+    except psutil.NoSuchProcess:
+        if corpus.read(root/'reports/automatic/status.json')['pid'] != args.supervisor:
+            raise ValueError('previous supervisor identity mismatch')
+    else:
+        command = owner.cmdline()
+        if (not any(name in command for name in ('reports.automatic_corpus', 'reports.handoff_collector_update'))
+                or '--job' in command or str(root) not in command):
+            raise ValueError('supervisor identity mismatch')
+        owner.terminate()
+        owner.wait(timeout=15)
     output = root / 'reports/automatic'
     try:
         with world_owner('automatic-corpus-supervisor', root):
@@ -58,8 +64,8 @@ def main():
                         process=SimpleNamespace(pid=value['pid'], is_running=lambda: False))
             for worker in workers.values():
                 worker.reader.seek(0, 2)
-            state['status'] = 'finishing_current_captures_before_cpu_update'
-            print('Both current GPU captures continue. Admit their results before installing CPU optimizations.', flush=True)
+            state['status'] = 'finishing_current_captures_before_collector_update'
+            print('Current GPU captures continue. Admit their results before installing the tested collector update.', flush=True)
             while workers:
                 for port, worker in list(workers.items()):
                     if not worker.poll():

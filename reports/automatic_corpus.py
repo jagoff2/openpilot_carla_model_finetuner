@@ -446,6 +446,10 @@ def wait_worker(root,state,state_path,job_id,job_path,result_path,reprocess=Fals
 def candidate_screen(root,task):
     """Reject quota and physical overlap conflicts before spending simulator time."""
     from lane_dataset.splits import GeometrySection,RoadInterval,group_geometry_sections
+    from lane_dataset.maneuvers import maneuver_event_errors
+    if task.get('route'):
+        semantic_errors=maneuver_event_errors(task['route'],task['family'],task.get('maneuver_phase_ranges'))
+        if semantic_errors:return semantic_errors[0]
     manifests=accepted_manifests(root);related=[m for m in manifests if m['split']==task['split'] and m['family']==task['family']]
     per_family=Config().targets[task['split']]//100
     if len(related)>=per_family:return 'quota_already_filled'

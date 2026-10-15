@@ -94,3 +94,28 @@ waits during this one-time update; the helper does not interrupt its recording.
 If installation fails, it restores the prior files and resumes collection.
 The capture policy number is unchanged because the optimization changes no
 acceptance criterion and should not cause deterministic failures to be retried.
+
+The subsequent acceptance correction changes label allocation, not lateral QA:
+twenty valid labels remain required, balanced across all five reviewed phases,
+with at least two distinct decisions in each phase. Requiring exactly four in
+every phase discarded complete events when one short phase had only two or
+three valid candidates despite enough verified labels elsewhere. Candidate
+selection, automatic review and interrupted-event recovery use the same rule.
+
+A live Town06 candidate exposed a separate annotation defect. Its selected
+junction was straight (maximum event curvature about 0.000002/m); the curve
+used to classify the full route began more than 50 m after that event ended.
+Numerical heading noise within the junction had been interpreted as a turn.
+Intersection proposals now require at least 20 degrees of signed heading
+change within the junction, measured from the actual center coordinates.
+Cached tasks are screened before dispatch, and admission repeats the check
+within the annotated event. Other curved events must have resolved heading
+change within their own phase ranges. No hidden future curve can qualify a
+straight recorded event.
+
+The misclassified 20-label validation shard was returned intact to quarantine,
+removed from the published index and active split plan, with a separate
+revocation report. Its original manifest and payloads were preserved. Training
+resumed from the prior committed step-8 checkpoint; the best checkpoint and
+export artifacts were not changed. The combined regression suite passed 258
+tests with the two existing SLSQP bounds warnings.

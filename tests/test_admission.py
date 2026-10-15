@@ -55,6 +55,19 @@ def test_selection_spreads_four_labels_across_each_reviewed_phase():
     assert all(list(phases.values()).count(phase) == 4 for phase in PHASES)
 
 
+def test_short_phase_does_not_discard_twenty_valid_complete_turn_labels():
+    progress = np.arange(701) * .1
+    ranges = {name: [10+8*i, 18+8*i] for i, name in enumerate(PHASES)}
+    indices = np.r_[100, 110, np.arange(180, 500, 10)]
+    selected, phases, errors = select_phase_indices(indices, progress, ranges)
+    assert not errors and len(selected) == 20
+    assert set(selected).issubset(set(indices))
+    assert list(phases.values()).count('approach') == 2
+    assert all(list(phases.values()).count(name) >= 2 for name in PHASES)
+    _, _, errors = select_phase_indices(indices[1:], progress, ranges)
+    assert 'insufficient_phase_candidates:approach:1/2' in errors
+
+
 def test_bad_far_interpolation_masks_future_without_rejecting_valid_near_action():
     from lane_dataset.admission import interpolation_supports_action
     proof=dict(original_road_arc_m=[0.,10.,20.,30.],interval_geometry_valid=[True,True,False],

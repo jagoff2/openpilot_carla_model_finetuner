@@ -14,6 +14,7 @@ def review_errors(review, manifest, telemetry, label_records):
     if review.get('frame_count')!=len(telemetry['timestamp']):errors.append('automatic_review_frame_count_mismatch')
     indices=[r['label_index'] for r in label_records]
     if review.get('label_indices')!=indices:errors.append('automatic_review_label_indices_mismatch')
+    if len(indices)!=20 or len(set(indices))!=20:errors.append('automatic_review_total_label_count')
     ranges=manifest.get('maneuver_phase_ranges') or {}
     phases={'approach','entry','apex','exit','recovery'}
     if set(ranges)!=phases:
@@ -23,7 +24,7 @@ def review_errors(review, manifest, telemetry, label_records):
         errors.append('automatic_review_complete_maneuver_not_recorded')
     for phase in phases:
         chosen=[r for r in label_records if r.get('phase')==phase]
-        if len(chosen)!=4:errors.append('automatic_review_phase_label_count:'+phase)
+        if len(chosen)<2:errors.append('automatic_review_phase_label_count:'+phase)
         lo,hi=ranges[phase]
         if any(not lo<=progress[r['label_index']]<=hi for r in chosen):
             errors.append('automatic_review_phase_label_location:'+phase)

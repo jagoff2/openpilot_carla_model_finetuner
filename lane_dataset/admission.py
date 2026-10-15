@@ -430,7 +430,11 @@ def _replay_support(shard, manifest, frames, telemetry, geometry, candidates):
 
 
 def select_phase_indices(indices, route_s, phase_ranges=None, limit=20):
-    """Four distinct samples per reviewed maneuver phase, preserving the 2 Hz grid."""
+    """Balance valid labels across all phases without an exact per-phase quota.
+
+    Keep at least two distinct decisions per phase and twenty overall. Short
+    phases need not discard an otherwise complete, independently verified turn.
+    """
     values = np.asarray(sorted(set(map(int, indices))), int)
     if not len(values):
         return values, {}, ["no_supported_candidate_labels"]
@@ -438,16 +442,29 @@ def select_phase_indices(indices, route_s, phase_ranges=None, limit=20):
     if not isinstance(phase_ranges, dict) or set(phase_ranges) != set(PHASES):
         chosen = values[np.unique(np.rint(np.linspace(0, len(values)-1, min(limit, len(values)))).astype(int))]
         return chosen, {int(i): "progress_only_unreviewed_phase" for i in chosen}, ["maneuver_phase_semantics_unreviewed"]
-    chosen, phases = [], {}
+    if limit < 2*len(PHASES):
+        raise ValueError('label limit cannot cover two decisions in every phase')
+    eligible_by_phase = {}
+    assigned = set()
     for phase in PHASES:
         lo, hi = map(float, phase_ranges[phase])
         if not np.isfinite([lo, hi]).all() or hi <= lo:
             raise ValueError("maneuver phase range must be finite and increasing")
         eligible = np.asarray([i for i in values if lo <= route_s[i] < hi or (phase == "recovery" and route_s[i] == hi)], int)
-        eligible = np.asarray([i for i in eligible if i not in phases], int)
-        if len(eligible) < 4:
-            errors.append(f"insufficient_phase_candidates:{phase}:{len(eligible)}/4")
-        positions = np.unique(np.rint(np.linspace(0, len(eligible)-1, min(4, len(eligible)))).astype(int)) if len(eligible) else []
+        eligible = np.asarray([i for i in eligible if i not in assigned], int)
+        assigned.update(map(int, eligible))
+        eligible_by_phase[phase] = eligible
+        if len(eligible) < 2:
+            errors.append(f"insufficient_phase_candidates:{phase}:{len(eligible)}/2")
+    counts = {phase: min(limit//len(PHASES), len(eligible)) for phase, eligible in eligible_by_phase.items()}
+    while sum(counts.values()) < limit:
+        available = [phase for phase in PHASES if counts[phase] < len(eligible_by_phase[phase])]
+        if not available:
+            break
+        counts[min(available, key=lambda phase: counts[phase])] += 1
+    chosen, phases = [], {}
+    for phase, eligible in eligible_by_phase.items():
+        positions = np.unique(np.rint(np.linspace(0, len(eligible)-1, counts[phase])).astype(int)) if len(eligible) else []
         for index in eligible[positions]:
             chosen.append(int(index)); phases[int(index)] = phase
     return np.asarray(sorted(chosen), int), phases, errors
@@ -640,6 +657,11 @@ def _build_labels_unlocked(shard_path, *, dataset_root=None):
         raise ValueError("telemetry is not aligned with recorded input frames")
     command_provenance = _load_command_provenance(shard, manifest, frames, telemetry)
     geometry, candidates = _json(shard / "geometry.json"), _json(_member(shard, manifest.get("candidates_file", "candidates.json")))
+    # Authenticate the annotated event itself, not a later bend in the route.
+    # Minimal diagnostic fixtures do not claim reviewed maneuver phases.
+    if manifest.get('maneuver_phase_ranges'):
+        from .maneuvers import maneuver_event_errors
+        errors += maneuver_event_errors(geometry,manifest.get('family'),manifest['maneuver_phase_ranges'])
     reference = LaneReference(geometry["left_xyz"], geometry["right_xyz"], geometry["arc_m"])
     hint = None
     for index, position in enumerate(telemetry["position_world"]):

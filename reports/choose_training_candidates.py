@@ -3,21 +3,25 @@ import gzip,json,shutil
 from pathlib import Path
 import numpy as np
 from lane_dataset.config import write_json,sha256_file
-from lane_dataset.admission import shard_postprocess_lock
+from lane_dataset.admission import shard_postprocess_lock, select_phase_indices
 
 
 def choose_indices(candidates,rejections,progress,phases):
+    verified=[v['index'] for v in candidates if not rejections.get(str(v['index']),['unverified'])]
+    selected,phase_by_index,errors=select_phase_indices(verified,progress,phases)
+    if errors or len(selected)!=20:return None
     chosen=[]
     for phase,(lo,hi) in phases.items():
+        target=sum(value==phase for value in phase_by_index.values())
         valid=[v for v in candidates if not rejections.get(str(v['index']),['unverified'])
             and (lo<=progress[v['index']]<hi or phase=='recovery' and progress[v['index']]==hi)]
-        if len(valid)<4:return None
+        if len(valid)<target:return None
         crop=[v['index'] for v in valid if (v.get('support') or {}).get('category')=='history_crop_loss']
         other=[v['index'] for v in valid if v['index'] not in crop]
         selected=[]
         for pool in (crop,other):
-            if len(selected)==4:break
-            count=min(4-len(selected),len(pool))
+            if len(selected)==target:break
+            count=min(target-len(selected),len(pool))
             selected.extend(pool[i] for i in np.unique(np.rint(np.linspace(0,len(pool)-1,count)).astype(int)))
         chosen.extend(selected)
     return sorted(set(chosen)) if len(set(chosen))==20 else None
@@ -42,7 +46,7 @@ def improve_candidate_coverage(shard,report):
         temporary=path.with_name(path.name+'.selection.tmp')
         with gzip.open(temporary,'wt',encoding='utf-8',compresslevel=9) as stream:json.dump(selected,stream,separators=(',',':'),allow_nan=False)
         temporary.replace(path)
-        write_json(shard/'candidate-selection.json',dict(method='four verified candidates per phase, preferring measured historical crop-loss support',
+        write_json(shard/'candidate-selection.json',dict(method='twenty verified candidates balanced across all phases, at least two per phase, preferring measured historical crop-loss support',
             indices=indices,original_sha256=sha256_file(original),candidate_sha256=sha256_file(path),
             original_selected_crop_loss_count=current,proposed_crop_loss_count=potential,
             scope='selection only; original candidate values preserved verbatim; admission replays every selected label'))

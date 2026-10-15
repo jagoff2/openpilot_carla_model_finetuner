@@ -9,6 +9,40 @@ import math
 import numpy as np
 
 
+def event_heading_change(route, start, end):
+    """Measure signed and absolute heading change in the selected event only."""
+    arc = np.asarray(route['arc_m'], float)
+    center = np.asarray(route['center_xyz'], float)
+    delta = np.diff(center[:, :2], axis=0)
+    if (center.shape != (len(arc), 3) or len(arc) < 4 or
+            not np.isfinite(center).all() or np.any(np.linalg.norm(delta, axis=1) <= 0) or
+            not arc[0] <= start < end <= arc[-1]):
+        raise ValueError('invalid maneuver heading geometry')
+    stations = (arc[:-1]+arc[1:])*.5
+    headings = np.unwrap(np.arctan2(delta[:, 1], delta[:, 0]))
+    query = np.r_[start, stations[(stations > start)&(stations < end)], end]
+    values = np.interp(query, stations, headings)
+    return float(values[-1]-values[0]), float(np.abs(np.diff(values)).sum())
+
+
+def maneuver_event_errors(route, family, phases):
+    """A curve elsewhere on the route cannot qualify a straight recorded event."""
+    if family == 'straight_recovery':
+        return []  # Its independent measured offset/recovery test is mandatory.
+    if not phases or 'entry' not in phases or 'exit' not in phases:
+        return ['maneuver_phase_ranges_missing']
+    start, end = phases['entry'][0], phases['exit'][1]
+    signed, total = event_heading_change(route, start, end)
+    if family == 'intersection_turn':
+        if not any(max(start, lo) < min(end, hi) for lo, hi in route.get('junction_ranges_m', [])):
+            return ['intersection_event_outside_junction']
+        if abs(signed) < math.radians(20.):
+            return ['intersection_event_has_no_resolved_turn']
+    elif total < math.radians(5.):
+        return ['curved_event_has_no_resolved_heading_change']
+    return []
+
+
 def propose_maneuver(route, family):
     arc=np.asarray(route["arc_m"],float)
     curvature=np.asarray(route["curvature_1pm"],float)
@@ -30,7 +64,15 @@ def propose_maneuver(route, family):
         if not ranges:
             result["annotation_blockers"]=["intersection_road_scope_missing"]
             return result
-        start,end=max(ranges,key=lambda pair:float(np.sum(np.abs(curvature[(arc>=pair[0])&(arc<=pair[1])]))))
+        # A route can cross a junction straight, then curve far beyond it.
+        # Classifying from full-route curvature made numerical noise inside
+        # that junction count as a left/right turn.
+        turns=[(abs(event_heading_change(route,*pair)[0]),pair) for pair in ranges]
+        turns=[value for value in turns if value[0]>=math.radians(20.)]
+        if not turns:
+            result['annotation_blockers']=['intersection_event_has_no_resolved_turn']
+            return result
+        _,(start,end)=max(turns,key=lambda value:value[0])
         result.update(desire_route_range_m=[max(float(arc[0]),start-10.),end],
                       intent_required_route_range_m=[max(float(arc[0]),start-5.),min(float(arc[-1]),start+1.)])
     inside=(arc>=start)&(arc<=end)

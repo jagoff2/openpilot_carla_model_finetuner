@@ -1,12 +1,15 @@
 import numpy as np
 import pytest
 
-from lane_dataset.maneuvers import propose_maneuver, route_desire
+from lane_dataset.maneuvers import propose_maneuver, route_desire, maneuver_event_errors
 
 
 def route_fixture():
     arc=np.arange(101,dtype=float)
-    return dict(arc_m=arc.tolist(),curvature_1pm=np.where((arc>=30)&(arc<=70),.02,0).tolist(),
+    curvature=np.where((arc>=30)&(arc<=70),.02,0)
+    heading=np.cumsum(curvature)
+    center=np.column_stack((np.cumsum(np.cos(heading)),np.cumsum(np.sin(heading)),np.zeros(len(arc))))
+    return dict(arc_m=arc.tolist(),curvature_1pm=curvature.tolist(),center_xyz=center.tolist(),
                 junction_ranges_m=[[30.,70.]])
 
 
@@ -43,3 +46,20 @@ def test_missing_junction_geometry_cannot_assign_branch_scope():
     result=propose_maneuver(route,"intersection_turn")
     assert "intersection_road_scope_missing" in result["annotation_blockers"]
     assert "intent_required_route_range_m" not in result
+
+
+def test_straight_junction_with_later_curve_is_not_an_intersection_turn():
+    route=route_fixture()
+    route['junction_ranges_m']=[[5.,25.]]
+    result=propose_maneuver(route,'intersection_turn')
+    assert result['annotation_blockers']==['intersection_event_has_no_resolved_turn']
+    phases=dict(entry=[5.,10.],exit=[20.,25.])
+    assert maneuver_event_errors(route,'intersection_turn',phases)==['intersection_event_has_no_resolved_turn']
+
+
+def test_recorded_turn_heading_check_ignores_incorrect_curvature_metadata():
+    route=route_fixture()
+    proposal=propose_maneuver(route,'intersection_turn')
+    assert not maneuver_event_errors(route,'intersection_turn',proposal['maneuver_phase_ranges'])
+    route['center_xyz']=[[s,0.,0.] for s in route['arc_m']]
+    assert maneuver_event_errors(route,'intersection_turn',proposal['maneuver_phase_ranges'])==['intersection_event_has_no_resolved_turn']
