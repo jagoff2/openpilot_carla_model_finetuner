@@ -85,6 +85,22 @@ def test_same_geometry_split_variants_are_deferred_while_another_worker_owns_gro
     assert not parallel.busy_group(task('train', 'geometry-b'), workers)
 
 
+def test_reattached_worker_reports_current_warmup_without_replaying_old_failure(tmp_path,capsys):
+    import json
+    output=tmp_path/'reports/automatic';output.mkdir(parents=True)
+    job=output/'one.job.json';write_json(job,{'id':'one','task':task('one')})
+    rows=[{'event':'capture_start'},{'tick':1500,'ticks':1506},
+          {'event':'job_complete','status':'failed'}, {'event':'capture_start'},
+          {'phase':'rolling_initialization','frame':20,'speed':1.2,'ready':False}]
+    (output/'one.log').write_text(''.join(json.dumps(r)+'\n' for r in rows))
+    worker=parallel.Worker(tmp_path,job,2400,process=SimpleNamespace(pid=123,is_running=lambda:True))
+    assert not worker.poll()
+    assert worker.latest['frame']==20 and 'tick' not in worker.latest
+    assert worker.stage=='rolling_initialization'
+    assert 'failed' not in capsys.readouterr().out
+    worker.close()
+
+
 def test_publication_rechecks_quota_after_other_worker_admission(tmp_path, monkeypatch):
     job = tmp_path/'one.job.json'
     worker = SimpleNamespace(id='one', port=2500, job_path=job, job=dict(task=task('one')),

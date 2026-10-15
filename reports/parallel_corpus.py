@@ -57,7 +57,9 @@ class Worker:
         self.result_path = job_path.with_suffix('.result.json')
         self.log_path = root/'reports/automatic'/(self.id+'.log')
         self.child = None
+        offset=0
         if process is None:
+            offset=self.log_path.stat().st_size if self.log_path.exists() else 0
             command = [sys.executable, '-u', '-m', 'reports.automatic_corpus',
                 '--root', str(root), '--job', str(job_path), '--port', str(port)]
             if reprocess:
@@ -66,9 +68,20 @@ class Worker:
                 self.child = subprocess.Popen(command, cwd=PROJECT, stdout=log,
                     stderr=subprocess.STDOUT, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
             process = psutil.Process(self.child.pid)
+        elif self.log_path.exists():
+            # Reattach only the latest attempt. Earlier failed runs remain in
+            # the log, but must not appear as current progress or new errors.
+            with self.log_path.open('rb') as stream:
+                while True:
+                    start=stream.tell();line=stream.readline()
+                    if not line:break
+                    try:event=json.loads(line).get('event')
+                    except (ValueError,AttributeError):continue
+                    if event in ('capture_start','reprocessing_preserved_capture'):offset=start
         self.process = process
         self.log_path.touch(exist_ok=True)
         self.reader = self.log_path.open(encoding='utf-8', errors='replace')
+        self.reader.seek(offset)
         self.latest = None
         self.stage = 'capture_and_label_qualification'
         corpus.log('collection_worker_attached' if self.child is None else 'collection_worker_started',
@@ -79,8 +92,14 @@ class Worker:
             print(f'[GPU {(self.port-2400)//100}] {line}', end='', flush=True)
             try:
                 value = json.loads(line)
+                if value.get('event')=='capture_start':
+                    self.latest=None;self.stage='capture_and_label_qualification'
+                if value.get('phase')=='rolling_initialization':
+                    self.latest={k:value[k] for k in ('phase','frame','speed','ready','steady_intervals','reasons') if k in value}
+                    self.stage='rolling_initialization'
                 if 'tick' in value:
                     self.latest = {k: value[k] for k in ('tick', 'ticks', 'route_s', 'speed', 'reasons') if k in value}
+                    self.stage='capture_and_label_qualification'
                 if value.get('event') == 'label_build':
                     self.stage = 'label_qualification'
             except (ValueError, TypeError):
