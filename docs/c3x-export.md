@@ -12,6 +12,22 @@ connects to **`iq@192.168.1.95`** to compile and verify native QCOM Tinygrad PKL
 It uses two CPU threads locally. Both collection GPUs remain assigned to CARLA.
 No model is activated and no driving software is replaced.
 
+To build an exact preserved training step, without reranking checkpoints or
+changing the best-export pointer:
+
+```powershell
+python -m lane_release.candidate --step 24
+```
+
+Use the configured training Python environment. This produces a separate
+`step24-candidate` release with verified ONNX graphs, the saved checkpoint's
+validation report, and an `*-onnx-candidate.zip` source package. The ZIP contains
+ONNX and metadata, not executable Tinygrad PKLs. It attempts native compilation
+at the usual device address; `--onnx-only` skips that attempt. Resume native
+compilation with `export-c3x.ps1 -Resume <candidate-directory>` when the device is
+online. The requested step remains pinned if training later promotes another
+checkpoint. Missing or ambiguous preserved steps fail explicitly.
+
 The device is currently offline. Generate and verify ONNX without connecting:
 
 ```powershell
