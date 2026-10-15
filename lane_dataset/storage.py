@@ -14,6 +14,22 @@ import uuid
 from .config import Config, sha256_file, write_json
 
 
+def rename_directory(source, target, timeout=10.):
+    """Retry Windows sharing violations without replacing an existing shard."""
+    source,target=Path(source),Path(target)
+    deadline=time.monotonic()+timeout
+    delay=.02
+    while True:
+        if target.exists():raise FileExistsError(target)
+        try:
+            source.rename(target)
+            return
+        except OSError as error:
+            remaining=deadline-time.monotonic()
+            if getattr(error,'winerror',None) not in (5,32,33) or remaining<=0:raise
+            time.sleep(min(delay,remaining));delay=min(.25,delay*2)
+
+
 class Store:
     def __init__(self, root, config=None):
         self.root = Path(root).resolve()
@@ -113,7 +129,7 @@ class Store:
         if target.exists():
             raise FileExistsError(target)
         write_json(stage / "disposition.json", dict(status="quarantined", reason=reason))
-        stage.rename(target)  # Same-volume atomic visibility to readers.
+        rename_directory(stage,target)  # Same-volume atomic visibility to readers.
         db.execute("UPDATE runs SET status='quarantined',reserved=0,path=?,reason=? WHERE id=?", (str(target), reason, row["id"]))
         return target
 
@@ -175,7 +191,7 @@ class Store:
                     if target.exists():
                         target = target.with_name(target.name + "-" + uuid.uuid4().hex[:10])
                     write_json(stage / "disposition.json", dict(status="quarantined", reason="uncommitted_reservation"))
-                    stage.rename(target)
+                    rename_directory(stage,target)
                     recovered.append(target.name)
         return recovered
 
@@ -217,6 +233,6 @@ class Store:
                     record.update(review_mode='automated_measured_v1',human_reviewed=False)
             write_json(shard/"manifest.json",manifest)
             write_json(shard/"disposition.json",dict(status="accepted",reason="all_bound_qualification_gates_passed"))
-            shard.rename(target)
+            rename_directory(shard,target)
             db.execute("UPDATE runs SET status='accepted',reserved=0,path=?,reason=NULL WHERE id=?",(str(target),row["id"]))
         return target

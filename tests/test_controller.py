@@ -150,9 +150,12 @@ def test_prediction_horizon_preserves_observed_body_and_stopping_distance():
     assert command.predicted_states[-1,0]+controller.config.vehicle_length_m/2<=12.5+1e-4
     expanded=controller.control(VehicleState(5.175,0.,0.,3.5,0.,timestamp_s=.05),observed(road(),t=.05),3.5)
     assert expanded.accepted and len(expanded.predicted_states)==17
+    short=BicycleMPC(SteeringCalibration.fixture(),MPCConfig(require_calibration=False)).control(
+        VehicleState(5.,0.,0.,3.5,0.),observed(road(length=10.,count=41)),3.5)
+    assert short.accepted and short.constraint_margins['observed_body_support']>=-1e-4
     with pytest.raises(ValueError,match='stopping_corridor'):
         BicycleMPC(SteeringCalibration.fixture(),MPCConfig(require_calibration=False)).control(
-            VehicleState(5.,0.,0.,3.5,0.),observed(road(length=10.,count=41)),3.5)
+            VehicleState(5.,0.,0.,3.5,0.),observed(road(length=9.,count=37)),3.5)
 
 
 def test_executed_command_sequence_limits_actor_reference_jerk_under_goal_jitter():

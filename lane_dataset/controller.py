@@ -13,6 +13,7 @@ import numpy as np
 from scipy.optimize import least_squares, minimize
 
 from .geometry import ObservableReference, wrap_angle
+from .capture_policy import speed_bounds, stopping_distance
 
 
 @dataclass(frozen=True)
@@ -338,9 +339,11 @@ class BicycleMPC:
         # when the complete immediate action and stopping corridor are observed.
         available=reference.s[-1]-s0-c.vehicle_length_m/2
         supported_steps=int(math.floor(available/max(state.speed_mps,target_speed,.1)/h))
-        stopping_steps=max(4,int(math.ceil((p.delay_s+state.speed_mps/abs(c.min_acceleration_mps2))/h)))
+        # Comparing a constant-speed horizon to a braking *time* required almost
+        # twice the actual stopping distance. Keep a spatial braking reserve.
+        required_stop=stopping_distance(state.speed_mps,abs(c.min_acceleration_mps2),p.delay_s+c.control_dt_s)
         n=min(n,supported_steps)
-        if n<stopping_steps:
+        if available+1e-8<required_stop or n<2:
             raise ValueError('insufficient_observed_stopping_corridor')
         sample_s = np.clip(s0+target_speed*np.arange(1,n+1)*h,reference.s[0],reference.s[-1])
         _,_,initial_curvature,_ = reference.sample(sample_s)
@@ -398,11 +401,12 @@ class BicycleMPC:
                 c.max_steering_rate_rps-np.abs(command_rate),
                 clearance-np.abs(lateral),reference.s[-1]-progress-c.vehicle_length_m/2,
                 c.max_executed_command_jerk_mps3-np.abs(executed_command_jerk)]
-            if p.qualified and p.speed_min_mps<=state.speed_mps<=p.speed_max_mps:
+            speed_low,speed_high=speed_bounds(p,0. if c.require_calibration else c.speed_calibration_margin_mps)
+            if p.qualified and speed_low<=state.speed_mps<=speed_high:
                 # A steady calibrated maneuver cannot borrow hypothetical
                 # braking outside the identified actuator domain to satisfy
                 # its lateral constraints. Startup stays diagnostic-only.
-                margins=np.r_[margins,dense[1:,3]-p.speed_min_mps,p.speed_max_mps-dense[1:,3]]
+                margins=np.r_[margins,dense[1:,3]-speed_low,speed_high-dense[1:,3]]
             track_lateral=lateral-desired_offset_m
             cost=float(np.sum(24*track_lateral**2+2*longitudinal**2+14*heading_error**2+
                 .7*(roll[1:,3]-target_speed)**2+.1*(z[:n]-np.arctan(p.wheelbase_m*kappa))**2)

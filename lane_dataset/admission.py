@@ -168,12 +168,14 @@ def rendered_boundary_status(shard, manifest, telemetry):
     return replay
 
 
-def command_domain_errors(calibration, speed, curvature, action_horizon_s):
+def command_domain_errors(calibration, speed, curvature, action_horizon_s, *, speed_tolerance_mps=0.):
     """Check actual measured speed/steering domains and recorded command horizon."""
     errors = []
     if not np.isfinite([speed, curvature, action_horizon_s]).all():
         return ["expert_command_or_horizon_nonfinite"]
-    if not (speed > .3 and calibration.speed_min_mps <= speed <= calibration.speed_max_mps):
+    from .capture_policy import speed_bounds
+    lower,upper=speed_bounds(calibration,speed_tolerance_mps)
+    if not (speed > .3 and lower <= speed <= upper):
         errors.append("command_speed_outside_measured_calibration_range")
     if abs(action_horizon_s - (calibration.delay_s + .05)) > 1e-6:
         errors.append("recorded_lateral_action_horizon_mismatch")
@@ -696,7 +698,8 @@ def _build_labels_unlocked(shard_path, *, dataset_root=None):
         else:
             speed = float(telemetry["speed"][index])
             curvature = float(telemetry["command_curvature"][index])
-            reasons.extend(command_domain_errors(calibration, speed, curvature, frames[index]["action_t"][0]))
+            reasons.extend(command_domain_errors(calibration, speed, curvature, frames[index]["action_t"][0],
+                speed_tolerance_mps=manifest.get('speed_tolerance_mps',0.)))
         if not bool(telemetry["command_accepted"][index]) or candidate.get("command_valid") is not True:
             reasons.append("expert_command_not_accepted")
         if not np.isfinite(telemetry["command_curvature"][index]):
@@ -962,7 +965,7 @@ def validate_capture_envelope(shard, manifest, telemetry):
             for key in ("collisions","cleanup_errors","reasons"):
                 if report.get(key) != []:
                     errors.append("traffic_"+key+"_missing_or_nonempty")
-            expected_frames = None if bootstrap_count is None else bootstrap_count+len(telemetry["timestamp"])
+            expected_frames = None if bootstrap_count is None else bootstrap_count+len(telemetry["timestamp"])+manifest.get('depth_fixture_initialization_frames',0)
             if expected_frames is None or report.get("validated_frames") != expected_frames:
                 errors.append("traffic_does_not_cover_every_owned_camera_tick")
             for key, minimum in (("minimum_corridor_clearance_m",0.),("minimum_body_clearance_m",.15)):

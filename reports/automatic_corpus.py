@@ -13,6 +13,7 @@ import numpy as np
 from lane_dataset.config import Config,PROJECT,DEFAULT_ROOT,sha256_file,write_json
 from lane_dataset.settings import path_setting
 from lane_dataset.simulator import world_owner
+from lane_dataset.capture_policy import CAPTURE_POLICY_VERSION, speed_bounds
 
 TRAINING_PYTHON=path_setting('training_python','LANE_TRAINING_PYTHON',sys.executable)
 DEFAULT_PLAN=DEFAULT_ROOT/'planning/reports/scenario-tasks.json'
@@ -75,9 +76,10 @@ def prepare_capture_task(task):
     from lane_dataset.inventory import sample_route,route_document
     from lane_dataset.boundary_reference import lane_facing_marking_reference
     task=copy.deepcopy(task);speed=task['nominal_speed_mps']
+    task['survey_road_surface']=True
     if any(hi-lo<2.*speed-1e-6 for lo,hi in task['maneuver_phase_ranges'].values()):
         raise ValueError('phase_cannot_contain_four_distinct_half_second_labels_at_calibrated_speed')
-    needed=task['warmup_distance_budget_m']+task['minimum_ticks']*.05*measured_calibration(speed).speed_max_mps+task['planned_preview_m']+2.
+    needed=task['warmup_distance_budget_m']+task['minimum_ticks']*.05*speed_bounds(measured_calibration(speed))[1]+task['planned_preview_m']+2.
     if task['route']['length_m']>=needed:return task
     start=task['start'];roadmap=native_map(task['town'])
     waypoint=roadmap.get_waypoint_xodr(start['road_id'],start['lane_id'],start['s'])
@@ -106,6 +108,14 @@ def retain_rejection_diagnostics(root,result):
     if reservation.get('id')!=shard.name:raise ValueError('rejection cleanup reservation identity mismatch')
     manifest=read(shard/'manifest.json')
     if manifest.get('status')=='accepted' or manifest.get('accepted_label_count',0):raise ValueError('cannot compact accepted data')
+    # A failed episode can contain useful, fully authenticated earlier frames.
+    # Preserve payloads for ordinary admission/recovery; disk reservations still
+    # account for them. Only empty preflight failures can be compacted here.
+    if manifest.get('partial_recording_frames',0) or manifest.get('archives') or manifest.get('recoverable_payloads_preserved'):
+        manifest['recoverable_payloads_preserved']=True
+        manifest['automatic_rejection_errors']=result.get('errors',[])
+        write_json(shard/'manifest.json',manifest)
+        return
     deleted=[]
     for name in ('packed_narrow.npz','packed_wide.npz','evidence.jsonl.gz','rendered-boundary-samples.json.gz','candidates.json.gz'):
         path=shard/name
@@ -159,7 +169,7 @@ def execute_job(root,job_path,port,reprocess=False):
     from lane_dataset.capture import capture_development,_finite_json
     from lane_dataset.admission import build_labels
     job=read(job_path);task=job['task'];result_path=job_path.with_suffix('.result.json')
-    result=dict(job=job['id'],status='failed',task=task['episode_id'])
+    result=dict(job=job['id'],status='failed',task=task['episode_id'],capture_policy_version=CAPTURE_POLICY_VERSION)
     try:
         if task.get('terminal_stop_route_m') is not None:
             task=prepare_capture_task(task)
@@ -177,6 +187,11 @@ def execute_job(root,job_path,port,reprocess=False):
             log('capture_start',episode=task['episode_id'],town=task['town'],port=port,ticks=task['minimum_ticks'])
             captured=capture_development(root,port,(port-2400)//100,task['minimum_ticks'],task=task)
         shard=Path(captured['path']);result['shard']=str(shard)
+        if captured['manifest'].get('error') and (shard/'partial-telemetry.npz').exists():
+            from lane_dataset.partial_capture import recover_capture_prefix
+            if recover_capture_prefix(shard):
+                captured['manifest']=read(shard/'manifest.json')
+                log('recovered_complete_event_prefix',shard=shard)
         if captured['manifest'].get('error'):
             result['errors']=[captured['manifest']['error']['message']]
         else:
@@ -249,7 +264,7 @@ def normalize_task(task):
     ticks=600 if recovery else int(math.ceil(phases['recovery'][1]/(calibration.speed_min_mps*.05)))+210
     # Reserve the full conservative speed-bound envelope checked by capture,
     # even though movement will finish at the declared physical stop.
-    required_length=max(stop+30.,warmup+ticks*.05*calibration.speed_max_mps+25.)+2.
+    required_length=max(stop+30.,warmup+ticks*.05*speed_bounds(calibration)[1]+25.)+2.
     if route['length_m']<required_length:
         points=sample_route(previous[task.get('branch',0)%len(previous)],required_length+2.,.5,task.get('branch',0))
         section,route=route_document(points,task['town'])
@@ -262,7 +277,7 @@ def normalize_task(task):
     result={**task,**proposal,'group_id':group,'episode_id':group+'-'+str(task['appearance']),
         'route':route,'start':route['start'],'nominal_speed_mps':speed,'minimum_ticks':ticks,
         'physical_map_initialization':True,'warmup_distance_budget_m':warmup,'planned_preview_m':25.,
-        'terminal_stop_route_m':stop,'maximum_control_rejection_frames':20,'semantic_qa':True,'survey_road_surface':False}
+        'terminal_stop_route_m':stop,'maximum_control_rejection_frames':20,'semantic_qa':True,'survey_road_surface':True}
     result['direction']=event_direction(route,phases,task['family'])
     result['route']['section']['family']=task['family'];result['route']['section']['direction']=result['direction']
     if recovery:

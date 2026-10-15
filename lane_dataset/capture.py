@@ -13,6 +13,7 @@ import gzip
 import numpy as np
 
 from .config import Config, PROJECT, sha256_file, write_json
+from .capture_policy import CAPTURE_POLICY_VERSION, SPEED_TOLERANCE_MPS, speed_bounds
 from .controller import BicycleMPC, MPCConfig, SteeringCalibration, VehicleState
 from .bootstrap import RollingWarmup, check_recording_seam
 from .observed_corridor import provenance as observable_provenance
@@ -84,13 +85,16 @@ def _calibration(root, nominal_speed_mps=5.):
     return SteeringCalibration(**json.loads(path.read_text())),dict(path=str(path),sha256=digest)
 
 
-def _depth_fixture(images, preprocessor, reference):
+def _depth_fixture(images, preprocessor, reference, world=None):
     """Road-surface samples use independent OpenDRIVE 3D boundary coordinates.
 
     A per-camera unique forward-vs-radial fit is required; depth is never
     credited merely because it looks plausible. Samples and transforms are
     retained for review. Curved/graded surface rasterization may fail this gate.
     """
+    if world is not None:
+        from .depth_fixture import collision_depth_fixture
+        return collision_depth_fixture(images,preprocessor,reference,world,OPTICAL_FROM_CARLA)
     report={}
     for name,profile in zip(("narrow","wide"),preprocessor.profiles):
         transform=OPTICAL_FROM_CARLA @ images[name+"_rgb_camera_from_world"]
@@ -155,7 +159,13 @@ def recording_budget(task, *, warmup_progress_m, recording_start_m, route_end_m,
     values=(warmup,preview,warmup_progress_m,recording_start_m,route_end_m,maximum_speed_mps)
     if not all(math.isfinite(value) for value in values) or min(warmup,preview,maximum_speed_mps)<=0 or ticks<4:
         raise ValueError("capture requires a finite positive recording distance budget")
-    if warmup_progress_m>warmup+1e-6:
+    # The planned warmup is a reserve estimate. Actual remaining route and the
+    # retained pre-event history determine whether an overrun is admissible.
+    if task.get('maneuver_phase_ranges'):
+        approach=float(task['maneuver_phase_ranges']['approach'][0])
+        if recording_start_m+Config().prefix_ticks*Config().dt*maximum_speed_mps>approach+1e-6:
+            raise ValueError('rolling initialization left insufficient pre-maneuver history')
+    elif warmup_progress_m>warmup+1e-6:
         raise ValueError("physical rolling initialization exceeded planned distance budget")
     needed=ticks*Config().dt*maximum_speed_mps+preview
     remaining=route_end_m-recording_start_m
@@ -164,6 +174,7 @@ def recording_budget(task, *, warmup_progress_m, recording_start_m, route_end_m,
     return dict(warmup_progress_m=float(warmup_progress_m),warmup_distance_budget_m=warmup,
                 recording_start_m=float(recording_start_m),remaining_route_m=float(remaining),
                 required_remaining_route_m=float(needed),planned_preview_m=preview,
+                warmup_overrun_m=max(0.,float(warmup_progress_m-warmup)),
                 speed_bound_mps=float(maximum_speed_mps),passed=True)
 
 
@@ -196,6 +207,7 @@ def _capture_owned(root,port,worker,ticks,benchmark,task):
                   config_sha256=config.digest(),calibration=binding,preprocessing=prep.contract(),
                   camera_optics=config.camera_optics_status,frames_file="frames.jsonl",labels_file="labels.npz",evidence_file="evidence.jsonl.gz",candidates_file="candidates.json.gz",command_provenance_file="command-provenance.jsonl.gz",
                   qa=dict(passed=False),audit_frames=[],accepted_label_count=0)
+    manifest.update(capture_policy_version=CAPTURE_POLICY_VERSION,speed_tolerance_mps=SPEED_TOLERANCE_MPS)
     write_json(out/"manifest.json",manifest)
     if task is not None:
         write_json(out/"requested-task.json",_finite_json(task))
@@ -268,14 +280,14 @@ def _capture_owned(root,port,worker,ticks,benchmark,task):
         evidence_normals=surface_normals(reference)
         mpc=BicycleMPC(calibration,MPCConfig(require_calibration=False,vehicle_width_m=2*ego.bounding_box.extent.y,vehicle_length_m=2*ego.bounding_box.extent.x))
         integral=0.;preview_ready=False;longitudinal_reference=0.;previous_throttle=0.;previous_brake=1.
-        bootstrap=RollingWarmup(calibration.speed_min_mps,calibration.speed_max_mps)
+        bootstrap=RollingWarmup(calibration.speed_min_mps,calibration.speed_max_mps,speed_tolerance_mps=SPEED_TOLERANCE_MPS)
         initializer=PhysicalInitializer(calibration);map_initialization_frames=0
         if not calibration.qualified:raise RuntimeError("measured steering calibration is unqualified")
         recording=False;index=0
         audit_ticks=set(np.linspace(0,ticks-1,5).astype(int).tolist())
         (out/"audit").mkdir()
         with (out/"frames.jsonl").open("w",encoding="utf-8") as frame_file, gzip.open(out/"evidence.jsonl.gz","wt",encoding="utf-8",compresslevel=1) as evidence_file, gzip.open(out/"command-provenance.jsonl.gz","wt",encoding="utf-8",compresslevel=1) as command_file:
-            for simulation_index in range(ticks+bootstrap.maximum_frames):
+            for simulation_index in range(ticks+bootstrap.maximum_frames+10):
                 clock=time.perf_counter();frame=world.tick();snapshot=world.get_snapshot()
                 if snapshot.frame!=frame: raise RuntimeError("world snapshot frame mismatch")
                 if traffic is not None:traffic.check(snapshot)
@@ -285,11 +297,15 @@ def _capture_owned(root,port,worker,ticks,benchmark,task):
                 planes_by_camera={cam:split_nv12(*converted[i]) for i,cam in enumerate(("narrow","wide"))}
                 luma_by_camera={cam:planes[0] for cam,planes in planes_by_camera.items()}
                 row=state(ego,snapshot);current_s,_=reference.project(row["position_world"][:2]);near=int(np.searchsorted(reference.s,current_s))
-                if simulation_index==0:
-                    depth_report=_depth_fixture(images,prep,reference)
+                if not depth_report or not all(value['qualified'] for value in depth_report.values()):
+                    depth_report=_depth_fixture(images,prep,reference,world)
                     write_json(out/"depth-fixture.json",_finite_json(depth_report))
                     if not all(value["qualified"] for value in depth_report.values()):
-                        raise RuntimeError("known geometry depth fixture failed before rolling initialization")
+                        manifest['depth_fixture_initialization_frames']=simulation_index+1
+                        if simulation_index>=9:
+                            raise RuntimeError("known geometry depth fixture failed before rolling initialization")
+                        batch_control(client,ego,brake=1.)
+                        continue
                 support=None;command=None;observable=None;reason=[]
                 evidence_documents=[]
                 if all(value["qualified"] for value in depth_report.values()):
@@ -403,7 +419,7 @@ def _capture_owned(root,port,worker,ticks,benchmark,task):
                     manifest["recording_distance_budget"]=recording_budget(task,
                         warmup_progress_m=manifest["bootstrap"]["route_progress_m"],
                         recording_start_m=current_s,route_end_m=float(reference.s[-1]),
-                        ticks=ticks,maximum_speed_mps=calibration.speed_max_mps)
+                        ticks=ticks,maximum_speed_mps=speed_bounds(calibration)[1])
                     seam=check_recording_seam(bootstrap_rows[-1],row)
                     manifest["bootstrap"]["recording_seam"]=seam
                     if not seam["passed"]:
@@ -441,7 +457,7 @@ def _capture_owned(root,port,worker,ticks,benchmark,task):
                 evidence_counts.append(dict(index=index,paired_supported=0 if support is None else int(np.sum(support.supported[:n]&support.supported[n:])),
                                             category="diagnostic_ambiguous" if support is None else support.category))
                 if index>=100 and index%10==0 and index<=ticks-201:
-                    candidates.append(dict(index=index,support=None if support is None else support.compact(),command_valid=bool(command and command.accepted and calibration.qualified and calibration.speed_min_mps<=row["speed"]<=calibration.speed_max_mps and calibration.steering_fraction_min<=command.carla_steer<=calibration.steering_fraction_max),
+                    candidates.append(dict(index=index,support=None if support is None else support.compact(),command_valid=bool(command and command.accepted and calibration.qualified and speed_bounds(calibration)[0]<=row["speed"]<=speed_bounds(calibration)[1] and calibration.steering_fraction_min<=command.carla_steer<=calibration.steering_fraction_max),
                                            command_evidence=[] if command is None else [asdict(ref) for ref in command.evidence_frames],
                                            interpolation_knot_indices=[] if observable is None else observable.source_indices.tolist(),
                                            observable_reference=None if observable is None else observable_provenance(observable)))
@@ -519,6 +535,10 @@ def _capture_owned(root,port,worker,ticks,benchmark,task):
             partial={key:np.asarray([row[key] for row in rows]) for key in rows[0] if key!='command_reasons'}
             np.savez_compressed(out/'partial-telemetry.npz',**partial)
             manifest['partial_recording_frames']=len(rows)
+            manifest['recoverable_payloads_preserved']=True
+            manifest['depth_qualified']=bool(depth_report) and all(v['qualified'] for v in depth_report.values())
+            with gzip.open(out/'candidates.json.gz','wt',encoding='utf-8',compresslevel=1) as stream:
+                json.dump(_finite_json(candidates),stream,separators=(',',':'),allow_nan=False)
         if boundary_frames:
             with gzip.open(out/"rendered-boundary-samples.json.gz","wt",encoding="utf-8",compresslevel=1) as stream:
                 json.dump(boundary_frames,stream,separators=(",",":"),allow_nan=False)

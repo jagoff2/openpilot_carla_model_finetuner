@@ -233,3 +233,17 @@ selection reports refer to this lateral score; `optimization_loss` separately
 includes the existing training guard against shortening the plan to evade lateral
 supervision. Earlier reports without `selection_metric` retain their historical
 combined score and are never compared directly with new lateral scores.
+
+Collection policy v2 surveys road elevations and validates depth against collision
+geometry at exact sensor pixels, including interior road samples visible in the
+narrow camera. Initial depth checks allow a bounded sensor settling interval.
+Warmup and action admission permit a declared 0.1 m/s operating tolerance around
+the unchanged measured calibration range; physical lateral QA remains 3.5 m/s²
+and 5 m/s³. Stopping support uses braking distance plus reaction delay.
+
+The queue remembers repeated geometry failures and automatically retries failures
+from older collection policies once. Interrupted recordings retain their image
+and observation payloads. A complete maneuver prefix with its required history
+and future suffix can be recovered and submitted to the normal admission checks;
+incomplete maneuvers remain unaccepted. Windows directory publication retries
+temporary sharing violations and never replaces an existing destination.

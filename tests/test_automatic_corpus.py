@@ -57,6 +57,18 @@ def test_rejection_compaction_preserves_diagnostics_and_refuses_accepted(tmp_pat
     with pytest.raises(ValueError,match='accepted'):retain_rejection_diagnostics(tmp_path,dict(shard=str(shard)))
 
 
+def test_interrupted_capture_keeps_all_earlier_training_payloads(tmp_path):
+    from reports.automatic_corpus import retain_rejection_diagnostics
+    shard=tmp_path/'quarantine'/'one-a1';shard.mkdir(parents=True)
+    write_json(shard/'reservation.json',dict(id=shard.name))
+    write_json(shard/'manifest.json',dict(status='development',accepted_label_count=0,partial_recording_frames=320))
+    for name in ('packed_narrow.npz','packed_wide.npz','evidence.jsonl.gz','candidates.json.gz'):
+        (shard/name).write_bytes(b'recoverable evidence')
+    retain_rejection_diagnostics(tmp_path,dict(shard=str(shard),errors=['late capture failure']))
+    assert (shard/'packed_narrow.npz').read_bytes()==b'recoverable evidence'
+    assert json.loads((shard/'manifest.json').read_text())['recoverable_payloads_preserved']
+
+
 def test_resume_discovers_surviving_worker_after_status_was_replaced(tmp_path,monkeypatch):
     from reports import automatic_corpus as runner
     import psutil

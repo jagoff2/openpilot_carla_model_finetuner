@@ -42,10 +42,13 @@ class RollingWarmup:
     maximum_frames: int = 400
     maximum_lateral_acceleration_mps2: float = 3.5
     maximum_lateral_jerk_mps3: float = 5.
+    speed_tolerance_mps: float = 0.
 
     def __post_init__(self):
         if not 0<self.speed_min_mps<=self.speed_max_mps:
             raise ValueError("rolling warmup needs a positive measured speed domain")
+        if not math.isfinite(self.speed_tolerance_mps) or not 0<=self.speed_tolerance_mps<=.1:
+            raise ValueError('invalid rolling speed tolerance')
         if not all(math.isfinite(value) and value>0 for value in (self.dt_s,self.steady_duration_s,
             self.maximum_lateral_acceleration_mps2,self.maximum_lateral_jerk_mps3)) or self.maximum_frames<2:
             raise ValueError("rolling warmup needs finite positive timing and physical limits")
@@ -67,7 +70,7 @@ class RollingWarmup:
         self.peak_lateral=max(self.peak_lateral,abs(lateral_acceleration_mps2));self.last_jerk=jerk
         valid=(jerk is not None and abs(jerk)<=self.maximum_lateral_jerk_mps3 and
                abs(lateral_acceleration_mps2)<=self.maximum_lateral_acceleration_mps2 and
-               self.speed_min_mps<=speed_mps<=self.speed_max_mps and command_accepted and visible_reference)
+               self.speed_min_mps-self.speed_tolerance_mps<=speed_mps<=self.speed_max_mps+self.speed_tolerance_mps and command_accepted and visible_reference)
         self.consecutive_intervals=self.consecutive_intervals+1 if valid else 0
         self.ready=self.consecutive_intervals*self.dt_s>=self.steady_duration_s-1e-9
         self.previous_timestamp=timestamp_s;self.previous_lateral=lateral_acceleration_mps2
@@ -80,6 +83,7 @@ class RollingWarmup:
                 "steady_duration_s":self.consecutive_intervals*self.dt_s,
                 "required_steady_duration_s":self.steady_duration_s,
                 "measured_speed_domain_mps":[self.speed_min_mps,self.speed_max_mps],
+                "speed_tolerance_mps":self.speed_tolerance_mps,
                 "maximum_observed_lateral_acceleration_mps2":self.peak_lateral,
                 "maximum_observed_lateral_jerk_mps3":self.peak_jerk,
                 "maximum_frames":self.maximum_frames,

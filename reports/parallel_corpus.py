@@ -19,6 +19,9 @@ import psutil
 from lane_dataset.config import Config, PROJECT, write_json
 from lane_dataset.simulator import world_owner
 from reports import automatic_corpus as corpus
+from reports.collection_failures import (retry_after_policy_change, remember_failure,
+    cached_failure, archive_previous_result)
+from lane_dataset.capture_policy import CAPTURE_POLICY_VERSION
 
 
 def discover_workers(root):
@@ -101,8 +104,9 @@ class Worker:
                 if not (shard/'manifest.json').exists():
                     continue
                 captured = corpus.read(shard/'manifest.json')
-                if not captured.get('error') and all((shard/name).is_file() for name in (
-                        'packed_narrow.npz', 'packed_wide.npz', 'evidence.jsonl.gz', 'telemetry.npz', 'candidates.json.gz')):
+                telemetry='partial-telemetry.npz' if captured.get('error') else 'telemetry.npz'
+                if all((shard/name).is_file() for name in (
+                        'packed_narrow.npz', 'packed_wide.npz', 'evidence.jsonl.gz', telemetry, 'candidates.json.gz')):
                     saved = dict(job=self.id, status='completed_capture_needs_postprocessing', shard=str(shard))
                     break
             write_json(self.result_path, saved or dict(job=self.id, status='worker_process_failed',
@@ -153,6 +157,7 @@ def finish(root, state, worker, test_report):
                 corpus.retain_rejection_diagnostics(root, {**result, 'errors': [str(error)]})
         result = dict(status='rejected', errors=[str(error)], traceback=traceback.format_exc())
     state['completed'][worker.id] = result
+    remember_failure(state,worker.job['task'],result)
     state['last_result'] = {**result, 'job': worker.id}
     corpus.log('collection_job_finished', gpu=(worker.port-2400)//100, job=worker.id,
         status=result['status'], errors=result.get('errors', []))
@@ -202,15 +207,26 @@ def run(root, plan_path, test_report):
                     else:
                         break
                     job_id = original['episode_id']
-                    if job_id in state['completed'] or any(w.id == job_id for w in workers.values()):
+                    if any(w.id == job_id for w in workers.values()):
                         continue
+                    if job_id in state['completed']:
+                        old=state['completed'][job_id]
+                        if not retry_after_policy_change(old):continue
+                        state.setdefault('previous_results',{}).setdefault(job_id,[]).append(old)
+                        archive_previous_result(output/(job_id+'.job.result.json'))
+                        del state['completed'][job_id]
                     if busy_group(original, workers):
                         pending.append((original, prepared))
                         continue
                     try:
                         task = copy.deepcopy(original) if prepared else corpus.normalize_task(original)
+                        cached=cached_failure(state,task)
+                        if cached:
+                            state['completed'][job_id]=dict(status='geometry_failure_cached',
+                                capture_policy_version=CAPTURE_POLICY_VERSION,**cached)
+                            continue
                         capture_task = output/(job_id+'.job.capture-task.json')
-                        actual = corpus.read(capture_task) if capture_task.exists() else task
+                        actual = task
                         published = root/'accepted'/actual['episode_id']
                         if published.exists():
                             state['completed'][job_id] = dict(status='accepted', path=str(published), labels=20,
