@@ -341,6 +341,9 @@ def test_future_geometry_coverage_passes_even_when_ego_has_not_reached_the_phase
     assert result["passed"],result["errors"]
     assert result["observed_geometry_intervals_m"][0][0]>0
     assert result["observed_geometry_intervals_m"][0][1]>70
+    restored=json.loads(json.dumps(result,allow_nan=False))
+    assert restored['passed'] is True
+    assert all(phase['passed'] is True for phase in restored['event_coverage'][0]['phases'].values())
 
 
 def test_missing_phase_geometry_does_not_inherit_physical_event_pass(obstacle_target):

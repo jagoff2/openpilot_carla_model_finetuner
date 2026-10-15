@@ -254,6 +254,30 @@ def test_fixture_only_collision_exclusion_restores_even_when_ray_raises(monkeypa
     assert changes==[False,True]
 
 
+@pytest.mark.parametrize('level_sidewalk',[True,False])
+def test_pedestrian_placement_moves_past_curb_lip_without_weakening_support(monkeypatch,level_sidewalk):
+    import lane_behavior.grounding as module
+    points=np.array([[39.7,4.,1.],[40.3,4.,1.],[39.7,4.6,1.],[40.3,4.6,1.]])
+    queries=[]
+    def query(world,actor,points,carla,*,stage):
+        queries.append(points.copy())
+        heights=[(.15 if p[1]>=4.12 else 0.) if level_sidewalk else (.15 if p[0]>40 else 0.) for p in points]
+        rays=[ray(p,height=h,label='Sidewalks') for p,h in zip(points,heights)]
+        return rays,dict(stage=stage,query_points_world_m=points.tolist(),rays=rays)
+    monkeypatch.setattr(module,'_ground_queries',query)
+    if not level_sidewalk:
+        with pytest.raises(module.GroundSupportError,match='within 0.6 m'):
+            module._pedestrian_standing_placement(None,None,points,np.array([0.,1.,0.]),None,GroundingConfig())
+        assert len(queries)==13
+    else:
+        offset,rays,audit,heights,attempts=module._pedestrian_standing_placement(
+            None,None,points,np.array([0.,1.,0.]),None,GroundingConfig())
+        assert offset==pytest.approx(.15) and heights==[.15]*4
+        assert not any(a['supported'] for a in attempts[:-1]) and attempts[-1]['supported'] is True
+        assert np.allclose(queries[-1],points+[0,.15,0])
+        json.dumps(attempts,allow_nan=False)
+
+
 @pytest.mark.parametrize('change',['tick','physics','restore','pose','ray'])
 def test_collision_query_replay_rejects_scope_or_pose_changes(grounded,change):
     document,reference=grounded;query=document['collision_query_policy']['queries'][-1]

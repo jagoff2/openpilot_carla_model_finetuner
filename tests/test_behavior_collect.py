@@ -193,3 +193,13 @@ def test_reservation_timeout_always_releases_own_lease(tmp_path,monkeypatch):
     with pytest.raises(TimeoutError):
         with collect.reserved_port(tmp_path,2500,wait_s=1.,stop_file=tmp_path/"STOP"):pytest.fail("not drained")
     assert released==["lease"]
+@pytest.mark.parametrize('results,expected',[
+    ([{'status':'accepted','accepted_labels':40}],0),
+    ([{'status':'admission_failed','error':'serialization'}],2),
+    ([{'status':'physical_rejected','accepted_labels':0}],2),
+    ([{'skipped':True,'prior':{'status':'admission_rejected'}}],2),
+    ([{'skipped':True,'prior':{'status':'accepted'}}],0),
+])
+def test_queue_exit_reports_job_failure(results,expected):
+    from lane_behavior.collect import queue_exit_code
+    assert queue_exit_code({'results':results})==expected

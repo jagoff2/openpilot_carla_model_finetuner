@@ -271,18 +271,30 @@ not establish device compilation or driving qualification.
 
 ## Deployment status
 
-At the 2026-10-15 live handoff, the first fully-on-road capture
-`20261015T145345-4b84e784` is running. Grounding passed with 0.184 m whole-body
-curb clearance and measured support for all four wheels; its frame 250 was
-visually checked. Full physical rollout and observation admission are pending.
-Accepted unmarked labels remain **0**.
+Both grounded parked-car captures completed physical QA. The first capture,
+`20261015T145345-4b84e784`, produced 40 candidate labels with observed departure,
+pass, return and nominal recovery coverage. Its admission report could not be
+saved because a NumPy boolean escaped the coverage calculation. Phase bounds
+and predicates now become native JSON numbers and booleans; the acceptance
+limits are unchanged. Re-admission reuses retained raw recordings and reruns
+independent checks before publication.
 
-`reports.continue_unmarked_collection` is waiting for that exact capture to
-complete, then performs its first admission and runs the remaining fixed-split
-parked-car and stationary-pedestrian jobs. It preserves the capture instead of
-recording the first job again. The live invocation retains 10 GiB hard headroom
-plus 5 GiB for ordinary collection, in addition to each job's conservative raw
-and publication allocation.
+The road-52 parked-car capture produced six candidate labels but lacks observed
+departure and passing coverage. Correct serialization does not qualify that
+episode. Its capture remains retained for diagnosis.
+
+Weather application reads one consistent weather value and allows up to five
+simulator frames for readback to match. Persistent mismatches still reject and
+name the differing fields. Stationary pedestrian placement searches outward by
+at most 0.6 m from the curb toe for four level supported envelope corners, before
+recording. Actual settled support is independently checked with the original
+4 cm gap/penetration limits. Vehicles retain their original fully-in-road
+placement and physical settling.
+
+Collection and continuation now return exit code 2 when any attempted job fails,
+including a previously failed skipped job. Process completion alone is not
+reported as successful collection. The two pedestrian jobs are retried under a
+new immutable source identity; old captures and diagnostics remain intact.
 
 `reports.start_mixed_when_admitted` keeps the existing ordinary-lane trainer
 running until unmarked training and validation cohorts are both admitted. It

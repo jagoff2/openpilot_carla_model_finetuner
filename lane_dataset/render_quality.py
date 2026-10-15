@@ -29,12 +29,26 @@ def apply_production_weather(world, carla, appearance):
     weather.wetness = 0.
     expected = {name: float(getattr(weather, name)) for name in WEATHER_FIELDS}
     world.set_weather(weather)
-    actual = {name: float(getattr(world.get_weather(), name)) for name in WEATHER_FIELDS}
-    if any(not math.isclose(actual[name], value, rel_tol=1e-6, abs_tol=1e-6)
-           for name, value in expected.items()):
-        raise RuntimeError('production weather readback mismatch')
+    readbacks = []
+    for tick in range(6):
+        # Weather updates can become visible on the next simulator frame.
+        # Read a single consistent value and allow bounded settling before
+        # sensors/recording; a persistent mismatch still rejects the capture.
+        observed = world.get_weather()
+        actual = {name: float(getattr(observed, name)) for name in WEATHER_FIELDS}
+        readbacks.append(actual)
+        mismatch = {name: dict(requested=value, actual=actual[name]) for name, value in expected.items()
+            if not math.isclose(actual[name], value, rel_tol=1e-6, abs_tol=1e-6)}
+        if not mismatch:
+            break
+        if tick == 5:
+            raise RuntimeError('production weather readback mismatch after five frames: '+str(mismatch))
+        if world.get_settings().synchronous_mode:
+            world.tick()
+        else:
+            world.wait_for_tick(10.)
     return dict(schema_version=RENDER_POLICY_VERSION, profile=profile,
-        requested=expected, actual=actual,
+        requested=expected, actual=actual, settling_ticks=tick, readbacks=readbacks,
         limitation='dry daylight only; wet reflection rendering not qualified')
 
 

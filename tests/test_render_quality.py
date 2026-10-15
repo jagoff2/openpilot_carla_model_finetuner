@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from lane_dataset.render_quality import (WEATHER_FIELDS, apply_production_weather,
     render_profile_errors, PackedVisualCheck)
@@ -48,6 +49,33 @@ def test_different_valid_frames():
         check.observe(rng.integers(16,235,(6,128,256),dtype=np.uint8), moving=True)
     assert check.report()['passed']
     assert check.report()['frame_count'] == 10
+
+
+@pytest.mark.parametrize('update_after',[1,3,None])
+def test_delayed_weather_update_is_bounded_and_persistent_mismatch_rejects(update_after):
+    class Weather:
+        def __init__(self):
+            for name in WEATHER_FIELDS:setattr(self,name,0.)
+    Weather.ClearNoon=Weather();Weather.ClearNoon.sun_altitude_angle=45.
+    Weather.CloudyNoon=Weather.ClearNoon
+    class World:
+        def __init__(self):self.current=Weather();self.ticks=0;self.reads=0
+        def set_weather(self,value):self.pending=value
+        def get_weather(self):self.reads+=1;return self.current
+        def get_settings(self):return SimpleNamespace(synchronous_mode=True)
+        def tick(self):
+            self.ticks+=1
+            if self.ticks==update_after:self.current=self.pending
+    world=World();carla=SimpleNamespace(WeatherParameters=Weather)
+    if update_after is None:
+        with pytest.raises(RuntimeError,match='after five frames.*sun_altitude_angle'):
+            apply_production_weather(world,carla,0)
+        assert world.ticks==5 and world.reads==6
+    else:
+        report=apply_production_weather(world,carla,0)
+        assert world.ticks==report['settling_ticks']==update_after
+        assert len(report['readbacks'])==world.reads==update_after+1
+        assert not render_profile_errors(dict(appearance=0,render_profile=report))
 
 
 def test_whole_archive_check_binds_hashes_and_finds_a_frozen_stream(tmp_path):

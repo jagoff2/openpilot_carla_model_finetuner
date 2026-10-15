@@ -411,6 +411,7 @@ def verify_label_recovery(target, rows, records):
         phases={}
         for phase,lo,hi in (("departure",event.start_s,event.plateau_start_s),
                 ("pass",event.plateau_start_s,event.plateau_end_s),("return",event.plateau_end_s,event.end_s)):
+            lo,hi=float(lo),float(hi)
             pieces=[[max(a,lo),min(b,hi)] for a,b in merged if min(b,hi)>max(a,lo)]
             lengths=[b-a for a,b in pieces]
             longest=max(lengths,default=0.);cursor=lo;gaps=[]
@@ -420,13 +421,14 @@ def verify_label_recovery(target, rows, records):
             if cursor<hi-1e-6:gaps.append([cursor,hi])
             phases[phase]=dict(interval_m=[lo,hi],covered_intervals_m=pieces,covered_m=sum(lengths),
                 covered_fraction=sum(lengths)/(hi-lo),maximum_contiguous_m=longest,gaps_m=gaps,
-                minimum_required_contiguous_m=.25,passed=longest>=.25-1e-6)
+                minimum_required_contiguous_m=.25,passed=bool(longest>=.25-1e-6))
             if not phases[phase]["passed"]:errors.append(f"event_{number}:no_contiguous_observed_{phase}_geometry")
         # Nominal recovery may become observable after its very first metre.
         # Require a genuinely nominal contiguous five-metre observed target
         # interval, while independent physical QA still checks full traversal.
-        next_start=target.excursions[number+1].start_s if number+1<len(target.excursions) else target.s[-1]
-        pieces=[[max(a,event.end_s),min(b,next_start)] for a,b in merged_nominal if min(b,next_start)>max(a,event.end_s)]
+        next_start=float(target.excursions[number+1].start_s if number+1<len(target.excursions) else target.s[-1])
+        event_end=float(event.end_s)
+        pieces=[[max(a,event_end),min(b,next_start)] for a,b in merged_nominal if min(b,next_start)>max(a,event_end)]
         distances=[float(np.interp(b,target.s,nominal_arc)-np.interp(a,target.s,nominal_arc)) for a,b in pieces]
         longest=max(distances,default=0.)
         if longest<max(5.,target.minimum_retained_nominal_recovery_m)-1e-6:

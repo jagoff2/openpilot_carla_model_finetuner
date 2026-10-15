@@ -6,7 +6,7 @@ from pathlib import Path
 import time
 
 from lane_dataset.config import sha256_file
-from lane_behavior.collect import run_queue, source_inventory, validate_queue
+from lane_behavior.collect import run_queue, source_inventory, validate_queue, queue_exit_code
 
 
 def main():
@@ -42,7 +42,7 @@ def main():
     result=run_queue(path,root=args.root,port=args.port,loader_python=args.loader_python,
         legacy_reserve_gib=args.legacy_reserve_gib)
     print(json.dumps(result,indent=2),flush=True)
-    return 0
+    return queue_exit_code(result)
 
 
 if __name__=='__main__':raise SystemExit(main())

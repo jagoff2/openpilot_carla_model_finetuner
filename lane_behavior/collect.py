@@ -256,6 +256,14 @@ def _no_reservation():
     yield
 
 
+def queue_exit_code(result):
+    """A completed supervisor is not a successful collection if any job failed."""
+    for entry in result['results']:
+        effective=entry.get('prior',entry)
+        if effective.get('status')!='accepted':return 2
+    return 0
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("queue",type=Path);parser.add_argument("--root",type=Path,required=True)
@@ -277,7 +285,7 @@ def main():
                 case=x["job"]["case"],required_new_bytes=x["required_new_bytes"]) for x in validated["jobs"]],
             fixed_headroom_bytes=int((10.+args.legacy_reserve_gib)*GIB))
     print(json.dumps(result,indent=2,allow_nan=False),flush=True)
-    return 0
+    return queue_exit_code(result) if args.run else 0
 
 
 if __name__=="__main__":raise SystemExit(main())

@@ -362,6 +362,26 @@ def verify_grounding(document,reference,*,task=None,recorded_actors=()):
         scope="measured stationary actor geometry, collision-ray ground support and vehicle gravity settling; no contact force claim")
 
 
+def _pedestrian_standing_placement(world,actor,bottom,right,carla,cfg):
+    """Find nearby level support beyond the curb toe, before any recording."""
+    attempts=[]
+    for offset in np.arange(0.,.6001,.05):
+        points=bottom+right*offset
+        rays,query=_ground_queries(world,actor,points,carla,stage='initial_placement')
+        try:
+            heights=[float(_ground_point(ray,{"Roads","Sidewalks","Ground","Terrain"})[2]) for ray in rays]
+            spread=max(heights)-min(heights)
+            supported=spread<=min(cfg.maximum_support_gap_m,cfg.maximum_support_penetration_m)
+            attempts.append(dict(outward_offset_m=float(offset),heights_m=heights,
+                height_spread_m=spread,supported=supported,query=query))
+            if supported:return float(offset),rays,query,heights,attempts
+        except GroundSupportError as error:
+            attempts.append(dict(outward_offset_m=float(offset),supported=False,error=str(error),
+                details=error.details,query=query))
+    raise GroundSupportError("stationary pedestrian has no level supported standing envelope within 0.6 m of curb",
+        dict(stage='before_recording',placement_attempts=attempts))
+
+
 def spawn_grounded_obstacle(world,task,reference,actors,*,road_reference,config=None):
     """Spawn/position before cameras, then physically settle an in-road vehicle."""
     import carla
@@ -392,16 +412,18 @@ def spawn_grounded_obstacle(world,task,reference,actors,*,road_reference,config=
         target=origin+right*(-float(np.min((vertices-edge)@right)))
     moved=vertices+target-origin
     bottom=moved[np.argsort(moved[:,2])[:4]]
-    rays,placement_query=_ground_queries(world,actor,bottom,carla,stage='initial_placement')
-    labels={"Roads"} if kind=="parked_vehicle" else {"Roads","Sidewalks","Ground","Terrain"}
-    try:heights=[_ground_point(r,labels,road_reference=road_reference if kind=='parked_vehicle' else None,
-        maximum_road_surface_residual_m=min(cfg.maximum_support_gap_m,cfg.maximum_support_penetration_m))[2] for r in rays]
-    except GroundSupportError as error:
-        raise GroundSupportError('initial fixture ground placement failed',dict(stage='before_physical_settling',
-            actor_id=int(actor.id),actor_origin_world_m=origin.tolist(),planned_origin_world_m=target.tolist(),
-            planned_body_bottom_world_xyz=bottom.tolist(),placement_rays=rays,cause=error.details)) from error
-    if kind=="pedestrian" and max(heights)-min(heights)>.04:
-        raise RuntimeError("stationary pedestrian needs a level supported standing envelope")
+    placement_search=None
+    if kind=="pedestrian":
+        offset,rays,placement_query,heights,placement_search=_pedestrian_standing_placement(world,actor,bottom,right,carla,cfg)
+        target+=right*offset;bottom=bottom+right*offset
+    else:
+        rays,placement_query=_ground_queries(world,actor,bottom,carla,stage='initial_placement')
+        try:heights=[_ground_point(r,{"Roads"},road_reference=road_reference,
+            maximum_road_surface_residual_m=min(cfg.maximum_support_gap_m,cfg.maximum_support_penetration_m))[2] for r in rays]
+        except GroundSupportError as error:
+            raise GroundSupportError('initial fixture ground placement failed',dict(stage='before_physical_settling',
+                actor_id=int(actor.id),actor_origin_world_m=origin.tolist(),planned_origin_world_m=target.tolist(),
+                planned_body_bottom_world_xyz=bottom.tolist(),placement_rays=rays,cause=error.details)) from error
     target[2]+=max(heights)-float(bottom[:,2].min())+(cfg.initial_drop_m if kind=="parked_vehicle" else 0.)
     actor.set_transform(carla.Transform(carla.Location(*map(float,target)),transform.rotation));world.tick()
     rows=[_state(actor,world)]
@@ -434,6 +456,7 @@ def spawn_grounded_obstacle(world,task,reference,actors,*,road_reference,config=
         placement_ground_rays=rays,collision_query_policy=dict(version='own_fixture_exclusion_without_world_tick_v1',
             queries=[placement_query,support_query]),initial_placement_before_sensors=True,
         pose_or_velocity_replacement_during_recording=False)
+    if placement_search is not None:document['standing_placement_search']=placement_search
     document["qualification"]=verify_grounding(document,road_reference,task=task)
     spec.update(placement=document["fixture_scope"],actual_road_clearance_m=document["qualification"]["road_clearance_m"])
     return actor,spec,document
