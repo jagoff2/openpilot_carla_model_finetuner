@@ -70,6 +70,18 @@ def test_spatial_resolution_gate_is_independent_of_measured_agreement():
         assert check_spatial_resolution(result,.008)['offset_m']==pytest.approx(offset)
 
 
+@pytest.mark.parametrize('shift',[0.,.06,.12])
+def test_merged_paint_width_cannot_locate_declared_stripe(shift):
+    offsets=np.linspace(-.4,.4,161)
+    mask=np.abs(offsets-shift)<=.125+1e-9
+    result=stripe_center(offsets,mask,np.zeros(len(offsets)),expected_width_m=.15)
+    assert result['reason']=='paint_width_unresolved' and not result['measured']
+    # A resolved stripe displaced by the same amount remains measurable.
+    mask=np.abs(offsets-shift)<=.075+1e-9
+    result=stripe_center(offsets,mask,np.zeros(len(offsets)),expected_width_m=.15)
+    assert result['measured'] and result['offset_m']==pytest.approx(shift)
+
+
 def frame_fixture(offset=0.):
     offsets,mask,residual=stripe(offset)
     samples=[]

@@ -55,9 +55,13 @@ def stripe_center(offsets, marking, depth_residual, *, maximum_depth_error=.15, 
     if expected_width_m is not None and (not np.isfinite(expected_width_m) or expected_width_m<=0):
         raise ValueError('declared paint width must be finite and positive')
     minimum_width=.02 if expected_width_m is None else max(.02,.8*expected_width_m)
+    maximum_width=.3 if expected_width_m is None else min(.3,1.25*expected_width_m)
     # A worn fragment at one edge does not locate the center of the full stripe.
     # This resolution test depends on width alone, never agreement with the map.
-    if not minimum_width-1e-9<=width<=.3:
+    # Intersecting/merged paint can be much wider than the declared stripe.
+    # Its midpoint does not locate that stripe. Apply the width test equally
+    # to centered and displaced samples, before testing map agreement.
+    if not minimum_width-1e-9<=width<=maximum_width+1e-9:
         return dict(measured=False,reason="paint_width_unresolved",width_m=width)
     return dict(measured=True,offset_m=centers[selected],width_m=width,
                 maximum_depth_residual_m=float(np.max(np.abs(residual[run]))))

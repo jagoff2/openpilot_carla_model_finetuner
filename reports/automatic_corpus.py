@@ -492,7 +492,9 @@ def needs_recovery_policy_retry(result):
 
 def candidate_queue(tasks,root=None):
     if root is not None:
-        from reports.collection_failures import priority_retries
+        from reports.collection_failures import priority_retries, slower_physical_retries
+        for task in slower_physical_retries(Path(root)/'reports/automatic'):
+            yield task,True
         for task in priority_retries(Path(root)/'reports/automatic'):
             yield task,True
     pilot_path=Path(root or DEFAULT_ROOT)/'planning/town06-flat-turn-plan.json'

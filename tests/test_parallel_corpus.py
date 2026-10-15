@@ -135,3 +135,22 @@ def test_already_accepted_validation_geometry_is_not_recaptured_for_training(tmp
         family='constant_radius', direction='left', town='Town07')
     assert parallel.corpus.candidate_screen(tmp_path, candidate) == 'geometry_group_already_assigned_to_validation'
     assert parallel.corpus.candidate_screen(tmp_path, {**candidate, 'split':'validation'}) is None
+
+
+def test_publication_failure_keeps_policy_and_labels_for_live_failure_memory(tmp_path, monkeypatch):
+    from lane_dataset.capture_policy import CAPTURE_POLICY_VERSION
+    from reports.collection_failures import cached_failure
+    job=tmp_path/'one.job.json';candidate=task('one')
+    measured=dict(status='measured_candidate_passed',capture_policy_version=CAPTURE_POLICY_VERSION,
+                  labels={'label_count':20})
+    worker=SimpleNamespace(id='one',port=2500,job_path=job,job=dict(task=candidate),
+        result_path=job.with_suffix('.result.json'),result=lambda:measured.copy())
+    monkeypatch.setattr(parallel.corpus,'needs_recovery_policy_retry',lambda result:False)
+    monkeypatch.setattr(parallel.corpus,'candidate_screen',lambda *args:None)
+    def reject(*args):raise ValueError('lateral_jerk_above_limit')
+    monkeypatch.setattr(parallel.corpus,'publish_candidate',reject)
+    state=dict(completed={})
+    parallel.finish(tmp_path,state,worker,tmp_path/'tests.xml')
+    assert state['completed']['one']['capture_policy_version']==CAPTURE_POLICY_VERSION
+    assert state['completed']['one']['labels']=={'label_count':20}
+    assert cached_failure(state,candidate)['kind']=='physical_jerk'

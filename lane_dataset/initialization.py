@@ -5,7 +5,7 @@ import numpy as np
 
 class PhysicalInitializer:
     def __init__(self,calibration):
-        self.calibration=calibration;self.throttle=0.;self.steer=0.
+        self.calibration=calibration;self.throttle=0.;self.steer=0.;self.progress_s=None
 
     def control(self,row,reference,target_speed,*,recording):
         if recording:raise ValueError('map initialization is prohibited in retained recording')
@@ -13,7 +13,8 @@ class PhysicalInitializer:
         c=self.calibration;yaw=float(row['rotation_world'][2])
         heading=np.array([math.cos(yaw),math.sin(yaw)])
         rear=np.asarray(row['position_world'][:2])-c.reference_offset_m*heading
-        progress,_=reference.project(rear)
+        progress,_=reference.project(rear,reference.s[0] if self.progress_s is None else self.progress_s)
+        self.progress_s=progress
         target=reference._center(min(reference.s[-1],progress+5.))[:2]
         delta=target-rear
         lateral=-math.sin(yaw)*delta[0]+math.cos(yaw)*delta[1]

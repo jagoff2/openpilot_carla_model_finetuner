@@ -56,9 +56,37 @@ def test_old_policy_failures_do_not_block_current_collection():
     state={}
     for appearance in (0,1):
         remember_failure(state,task(appearance=appearance),
-            {**failure(),'capture_policy_version':CAPTURE_POLICY_VERSION-1})
+            {**failure(),'capture_policy_version':5})
     assert cached_failure(state,task('other')) is None
     assert warmup_signature({'route':{}}) is None
+
+
+def test_paint_fix_does_not_retry_unrelated_version_six_warmup_failures():
+    from reports.collection_failures import retry_after_policy_change
+    state={}
+    for appearance in (0,1):
+        old={**failure(),'capture_policy_version':6}
+        remember_failure(state,task(appearance=appearance),old)
+    assert cached_failure(state,task('other'))['kind']=='repeated_physical_warmup_corridor'
+    assert not retry_after_policy_change(old)
+    assert retry_after_policy_change({**old,'errors':['rendered_boundary_disagreement_above_five_cm']})
+
+
+def test_lower_speed_retry_keeps_geometry_and_event_and_requires_calibration():
+    from types import SimpleNamespace
+    import pytest
+    from reports.collection_failures import retime_complete_event
+    original=task();original.update(minimum_ticks=600,
+        maneuver_phase_ranges=dict(approach=[30.,40.],entry=[40.,50.],apex=[50.,60.],exit=[60.,70.],recovery=[70.,80.]))
+    calibration=SimpleNamespace(qualified=True,speed_min_mps=2.45,speed_max_mps=2.55)
+    result=retime_complete_event(original,2.5,calibration)
+    assert result['nominal_speed_mps']==2.5 and original['nominal_speed_mps']==3.5
+    assert result['route']==original['route'] and result['maneuver_phase_ranges']==original['maneuver_phase_ranges']
+    assert result['minimum_ticks']*.05>=80/2.45+10.
+    state={};remember_failure(state,original,failure('lateral_jerk_above_limit'))
+    assert cached_failure(state,result) is None
+    calibration.qualified=False
+    with pytest.raises(ValueError,match='qualified'):retime_complete_event(original,2.5,calibration)
 
 
 def test_startup_restores_failure_evidence_and_separates_skips_from_capture_jobs(tmp_path):

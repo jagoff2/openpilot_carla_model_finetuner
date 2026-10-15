@@ -283,7 +283,7 @@ def _capture_owned(root,port,worker,ticks,benchmark,task):
         bootstrap=RollingWarmup(calibration.speed_min_mps,calibration.speed_max_mps,speed_tolerance_mps=SPEED_TOLERANCE_MPS)
         initializer=PhysicalInitializer(calibration);map_initialization_frames=0
         if not calibration.qualified:raise RuntimeError("measured steering calibration is unqualified")
-        recording=False;index=0
+        recording=False;index=0;progress_hint=reference.s[0]
         audit_ticks=set(np.linspace(0,ticks-1,5).astype(int).tolist())
         (out/"audit").mkdir()
         with (out/"frames.jsonl").open("w",encoding="utf-8") as frame_file, gzip.open(out/"evidence.jsonl.gz","wt",encoding="utf-8",compresslevel=1) as evidence_file, gzip.open(out/"command-provenance.jsonl.gz","wt",encoding="utf-8",compresslevel=1) as command_file:
@@ -296,7 +296,8 @@ def _capture_owned(root,port,worker,ticks,benchmark,task):
                 packed=prep.pack_nv12(converted[0][0],converted[1][0],(converted[0][1],converted[1][1]));packed_done=time.perf_counter()
                 planes_by_camera={cam:split_nv12(*converted[i]) for i,cam in enumerate(("narrow","wide"))}
                 luma_by_camera={cam:planes[0] for cam,planes in planes_by_camera.items()}
-                row=state(ego,snapshot);current_s,_=reference.project(row["position_world"][:2]);near=int(np.searchsorted(reference.s,current_s))
+                row=state(ego,snapshot);current_s,_=reference.project(row["position_world"][:2],progress_hint)
+                progress_hint=current_s;near=int(np.searchsorted(reference.s,current_s))
                 if not depth_report or not all(value['qualified'] for value in depth_report.values()):
                     depth_report=_depth_fixture(images,prep,reference,world)
                     write_json(out/"depth-fixture.json",_finite_json(depth_report))

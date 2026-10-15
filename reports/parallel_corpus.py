@@ -167,6 +167,7 @@ def save(root, state, workers):
 
 def finish(root, state, worker, test_report):
     result = worker.result()
+    measured_result = result.copy()
     policy_version = result.get('capture_policy_version')
     retry_marker = worker.result_path.with_name(worker.result_path.stem+'.before-recovery-policy.json')
     if result['status'] == 'completed_capture_needs_postprocessing':
@@ -192,6 +193,12 @@ def finish(root, state, worker, test_report):
             if shard.parent == root/'quarantine' and shard.exists():
                 corpus.retain_rejection_diagnostics(root, {**result, 'errors': [str(error)]})
         result = dict(status='rejected', errors=[str(error)], traceback=traceback.format_exc())
+    # Publication replaces the measured result with a short disposition.
+    # Keep its version and label count so live failure memory and targeted
+    # retries work without requiring a supervisor restart to recover metadata.
+    result.setdefault('capture_policy_version', policy_version)
+    if result['status'] != 'accepted' and 'labels' in measured_result:
+        result.setdefault('labels', measured_result['labels'])
     state['completed'][worker.id] = result
     state.setdefault('capture_jobs',{})[worker.id] = dict(status=result['status'],
         capture_policy_version=policy_version)
