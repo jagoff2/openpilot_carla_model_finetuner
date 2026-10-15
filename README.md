@@ -109,6 +109,16 @@ completed events rejected by the corrected admission checks are retried before
 unproven routes. Warmup frames and recording progress do not increase the accepted
 count; publication follows label and physical checks.
 
+The catalogue schedules routes with continuous painted boundaries before routes
+with long unpainted gaps, distributing opportunities across scenario families and
+the separate Town05 test pool. This avoids spending both workers on short,
+unmarked junction routes while observable curves and straights wait. Curbs and
+road edges remain eligible. Map markings affect scheduling only; RGB/depth
+evidence, physical checks, split isolation and corpus quotas still decide
+acceptance. `screened-pool.queue.sqlite` is a rebuildable scheduling index beside
+the original catalogue, not another dataset. The console reports
+`collection_candidate_selected` with the boundary priority for each new job.
+
 The trainer follows `training-index.partial.json`, regenerates separate original
 and student recurrent histories, and updates both vision and policy using accepted
 **training** episodes. Four passes per episode are the default; new episodes take

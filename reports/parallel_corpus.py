@@ -270,6 +270,9 @@ def run(root, plan_path, test_report):
                         if skip:
                             state['completed'][job_id] = dict(status=skip)
                             continue
+                        from reports.candidate_priority import boundary_risk
+                        corpus.log('collection_candidate_selected',job=job_id,gpu=(port-2400)//100,
+                            town=task.get('town'),family=task['family'],boundary_priority=boundary_risk(task))
                         job_path = output/(job_id+'.job.json')
                         write_json(job_path, dict(id=job_id, task=task))
                         result_path = job_path.with_suffix('.result.json')
