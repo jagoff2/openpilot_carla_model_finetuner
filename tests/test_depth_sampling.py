@@ -34,3 +34,10 @@ def test_plane_prediction_uses_exact_stock_nearest_source_pixel():
     expected=_project_plane_nearest(obs.depth_m,warp,(512,256))
     for x,y in ((100,100),(251,150),(12,125)):
         assert abs(predictor(0,x,y)-expected[y,x])<1e-5
+
+
+def test_carla_half_pixel_center_is_used_after_stock_nearest_lookup():
+    obs=replace(observation(),depth_pixel_center_offset=.5)
+    predictor=plane_depth_predictor(obs,np.array([[0.,1.3,25.]]))
+    assert abs(predictor(0,100,90)-260./10.5)<1e-8
+    assert abs(predictor(0,100,90)-260./10.)>.15

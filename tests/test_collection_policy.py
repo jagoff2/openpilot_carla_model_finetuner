@@ -79,6 +79,8 @@ def test_depth_fixture_uses_independent_geometry_at_exact_pixels(monkeypatch):
     class World:
         def cast_ray(self,start,end):
             a=np.array([start.x,start.y,start.z]);b=np.array([end.x,end.y,end.z])
+            if a[0]<2.5:  # Ego collision box surrounds the mounted camera.
+                return [SimpleNamespace(location=Location(*a),label=99)]
             t=-a[2]/(b[2]-a[2])
             return [] if not 0<t<1 else [SimpleNamespace(location=Location(*(a+t*(b-a))),label=1)]
     x=np.arange(0.,40.,.5);left=np.c_[x,np.full(len(x),-1.75),np.zeros(len(x))];right=left.copy();right[:,1]=1.75
@@ -87,7 +89,7 @@ def test_depth_fixture_uses_independent_geometry_at_exact_pixels(monkeypatch):
     profile=SimpleNamespace(K=k,width=640,height=480)
     camera=np.eye(4);camera[2,3]=-1.3
     rows=np.arange(480)[:,None]
-    depth=np.broadcast_to(np.divide(390.,rows-240,out=np.full((480,1),1000.),where=rows>240),(480,640))
+    depth=np.broadcast_to(np.divide(390.,rows+.5-240,out=np.full((480,1),1000.),where=rows>240),(480,640))
     images={name+suffix:value for name in ('narrow','wide') for suffix,value in (('_rgb_camera_from_world',camera),('_depth',depth))}
     report=collision_depth_fixture(images,SimpleNamespace(profiles=[profile,profile]),ref,World(),OPTICAL_FROM_CARLA)
     assert all(v['qualified'] and v['depth_mode']=='forward' for v in report.values())

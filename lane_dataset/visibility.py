@@ -42,6 +42,7 @@ class CameraObservation:
     chroma_u: np.ndarray | None = None
     chroma_v: np.ndarray | None = None
     surface_normals_world: np.ndarray | None = None
+    depth_pixel_center_offset: float = 0.
 
 
 @dataclass(frozen=True)

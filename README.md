@@ -234,9 +234,11 @@ includes the existing training guard against shortening the plan to evade latera
 supervision. Earlier reports without `selection_metric` retain their historical
 combined score and are never compared directly with new lateral scores.
 
-Collection policy v2 surveys road elevations and validates depth against collision
+The collection policy surveys road elevations and validates depth against collision
 geometry at exact sensor pixels, including interior road samples visible in the
-narrow camera. Initial depth checks allow a bounded sensor settling interval.
+narrow camera. Collision rays start beyond the ego vehicle, and depth/road-edge
+measurements use CARLA's half-pixel sensor centers. Initial depth checks allow a
+bounded sensor settling interval.
 Warmup and action admission permit a declared 0.1 m/s operating tolerance around
 the unchanged measured calibration range; physical lateral QA remains 3.5 m/s²
 and 5 m/s³. Stopping support uses braking distance plus reaction delay.

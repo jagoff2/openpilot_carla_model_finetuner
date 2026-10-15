@@ -207,7 +207,7 @@ def _capture_owned(root,port,worker,ticks,benchmark,task):
                   config_sha256=config.digest(),calibration=binding,preprocessing=prep.contract(),
                   camera_optics=config.camera_optics_status,frames_file="frames.jsonl",labels_file="labels.npz",evidence_file="evidence.jsonl.gz",candidates_file="candidates.json.gz",command_provenance_file="command-provenance.jsonl.gz",
                   qa=dict(passed=False),audit_frames=[],accepted_label_count=0)
-    manifest.update(capture_policy_version=CAPTURE_POLICY_VERSION,speed_tolerance_mps=SPEED_TOLERANCE_MPS)
+    manifest.update(capture_policy_version=CAPTURE_POLICY_VERSION,speed_tolerance_mps=SPEED_TOLERANCE_MPS,depth_pixel_center_offset=.5)
     write_json(out/"manifest.json",manifest)
     if task is not None:
         write_json(out/"requested-task.json",_finite_json(task))
@@ -313,7 +313,7 @@ def _capture_owned(root,port,worker,ticks,benchmark,task):
                         observation=CameraObservation(frame,row["timestamp"],cam,images[cam+"_rgb"],images[cam+"_depth"],
                             OPTICAL_FROM_CARLA@images[cam+"_rgb_camera_from_world"],profile.K,warp,depth_mode=depth_report[cam]["depth_mode"],depth_validated=True,luma=luma_by_camera[cam],
                             chroma_u=planes_by_camera[cam][1],chroma_v=planes_by_camera[cam][2],
-                            surface_normals_world=evidence_normals,
+                            surface_normals_world=evidence_normals,depth_pixel_center_offset=.5,
                             marking_mask=(images[cam+"_semantic_segmentation"]==int(carla.CityObjectLabel.RoadLines)) if semantic_qa else None,
                             road_mask=np.isin(images[cam+"_semantic_segmentation"],[int(carla.CityObjectLabel.Roads),int(carla.CityObjectLabel.RoadLines)]) if semantic_qa else None,
                             road_exterior_mask=np.isin(images[cam+"_semantic_segmentation"],[int(carla.CityObjectLabel.Sidewalks),int(carla.CityObjectLabel.Terrain),int(carla.CityObjectLabel.Ground)]) if semantic_qa else None)
@@ -435,7 +435,7 @@ def _capture_owned(root,port,worker,ticks,benchmark,task):
                             intrinsics=profile.K,depth_mode=depth_report[cam]["depth_mode"],
                             road_line_tag=int(carla.CityObjectLabel.RoadLines),luma=luma_by_camera[cam],
                             road_tag=int(carla.CityObjectLabel.Roads),
-                            exterior_tags=[int(carla.CityObjectLabel.Sidewalks),int(carla.CityObjectLabel.Terrain),int(carla.CityObjectLabel.Ground)])
+                            exterior_tags=[int(carla.CityObjectLabel.Sidewalks),int(carla.CityObjectLabel.Terrain),int(carla.CityObjectLabel.Ground)],pixel_center_offset=.5)
                         for cam,profile in zip(("narrow","wide"),prep.profiles)}))
                 for document in evidence_documents:
                     evidence_file.write(json.dumps(_finite_json(document),separators=(",",":"))+"\n")

@@ -27,9 +27,12 @@ def collision_depth_fixture(images, preprocessor, reference, world, optical_from
             x,y=np.rint(pixels[index]).astype(int)
             if (x,y) in seen:continue
             seen.add((x,y))
-            ray=np.linalg.solve(profile.K,np.array([x,y,1.]))
+            ray=np.linalg.solve(profile.K,np.array([x+.5,y+.5,1.]))
+            # The physical camera is inside the ego collision volume. Begin
+            # ahead of that body; all fixture road hits must still be >4 m away.
+            ray_start=(inverse@np.r_[ray*3.,1.])[:3]
             endpoint=(inverse@np.r_[ray*40.,1.])[:3]
-            hits=world.cast_ray(carla.Location(*map(float,origin)),carla.Location(*map(float,endpoint)))
+            hits=world.cast_ray(carla.Location(*map(float,ray_start)),carla.Location(*map(float,endpoint)))
             if not hits:continue
             hit=min(hits,key=lambda h:np.linalg.norm(np.array([h.location.x,h.location.y,h.location.z])-origin))
             if hit.label not in road_labels:continue
@@ -42,6 +45,6 @@ def collision_depth_fixture(images, preprocessor, reference, world, optical_from
             result=validate_depth_geometry(np.asarray(measured),np.asarray(coordinates),tolerance_m=.15)
         else:result=dict(qualified=False,reason='insufficient_off_axis_known_surface_samples',depth_mode=None)
         result.update(samples=samples,measured_m=measured,camera_points=np.asarray(coordinates).tolist(),
-            fixture='collision-surveyed road interiors at exact sensor pixel rays',camera_from_world=transform.tolist())
+            fixture='collision-surveyed road interiors at exact sensor pixel rays',ray_start_forward_m=3.,pixel_center_offset=.5,camera_from_world=transform.tolist())
         report[name]=result
     return report

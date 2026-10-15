@@ -89,7 +89,8 @@ def edge_center(offsets, road, exterior, luma, depth_residual, side):
 
 
 def measure_camera(*, reference, current_s, tags, depth, camera_from_world,
-                   intrinsics, depth_mode, road_line_tag, luma=None, road_tag=None, exterior_tags=()):
+                   intrinsics, depth_mode, road_line_tag, luma=None, road_tag=None, exterior_tags=(),pixel_center_offset=0.):
+    if pixel_center_offset not in (0.,.5):raise ValueError('unsupported sensor pixel center convention')
     offsets=np.linspace(-.4,.4,161)
     # Paint beyond a junction can remain resolved in the narrow camera even
     # when the nearest 25 m has no markings. Distance alone is not a precision
@@ -106,11 +107,21 @@ def measure_camera(*, reference, current_s, tags, depth, camera_from_world,
             pixel_span=float(np.linalg.norm(pixels[81]-pixels[79]))
             meters_per_pixel=.01/pixel_span if np.isfinite(pixel_span) and pixel_span>0 else None
             finite=np.isfinite(pixels).all(axis=1)&(optical[:,2]>0)
-            xy=np.rint(np.where(finite[:,None],pixels,-100.)).astype(int)
+            xy=np.rint(np.where(finite[:,None],pixels-pixel_center_offset,-100.)).astype(int)
             inside=finite&(xy[:,0]>=0)&(xy[:,0]<tags.shape[1])&(xy[:,1]>=0)&(xy[:,1]<tags.shape[0])
             marking=np.zeros(len(offsets),bool)
             residual=np.full(len(offsets),np.nan)
             expected=optical[:,2] if depth_mode=="forward" else np.linalg.norm(optical,axis=1)
+            if pixel_center_offset:
+                tangent=reference._center(progress,1)
+                plane_normal=np.cross(tangent,direction)
+                plane_normal/=np.linalg.norm(plane_normal)
+                plane_normal=np.asarray(camera_from_world)[:3,:3]@plane_normal
+                plane_distance=float(plane_normal@optical[80])
+                rays=np.column_stack((xy+pixel_center_offset,np.ones(len(xy))))@np.linalg.inv(intrinsics).T
+                denominator=rays@plane_normal
+                forward=np.divide(plane_distance,denominator,out=np.full(len(xy),np.inf),where=np.abs(denominator)>1e-8)
+                expected=forward if depth_mode=='forward' else forward*np.linalg.norm(rays,axis=1)
             x,y=xy[inside,0],xy[inside,1]
             marking[inside]=tags[y,x]==road_line_tag
             residual[inside]=depth[y,x]-expected[inside]
@@ -143,7 +154,7 @@ def measure_camera(*, reference, current_s, tags, depth, camera_from_world,
                 marking_bits=np.packbits(marking).tolist(),
                 depth_residual_m=[float(value) if np.isfinite(value) else None for value in residual],
                 **edge_proof,**result))
-    return dict(offsets_m=offsets.tolist(),samples=rows)
+    return dict(offsets_m=offsets.tolist(),samples=rows,pixel_center_offset=pixel_center_offset)
 
 
 def summarize_frames(frames):
